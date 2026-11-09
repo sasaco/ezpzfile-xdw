@@ -1,0 +1,23 @@
+# The headless runner structural-mcp starts (protocol v1): its own workspace beside engine/, so that the engine's
+# files stay as they are upstream. Build: cargo build --release --locked --manifest-path headless/Cargo.toml
+[package]
+name = "ezpzxdw-headless"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Protocol v1 runner of EZPZ File XDW for structural-mcp (inspect, text)"
+
+[[bin]]
+name = "ezpzxdw-headless"
+path = "src/main.rs"
+
+[dependencies]
+ezpzxdw-core = { path = "../engine/crates/ezpzxdw-core" }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+
+[workspace]
