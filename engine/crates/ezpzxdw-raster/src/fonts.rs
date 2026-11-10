@@ -1,9 +1,12 @@
 //! Fonts for drawing text: TrueType/OpenType files (and collections) read with
 //! `ttf-parser`, matched by the face name a page asks for. Nothing is bundled:
-//! the caller adds font data, or [`Fonts::system`] looks for a short list of
-//! well-known files (MS Mincho/Gothic, Meiryo, Yu, Noto CJK, Arial, ...).
+//! [`Fonts::runner`] lists where to look, and the files are read only when the
+//! first text run is drawn (a scanned page never reads them).
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::path::{Path as FsPath, PathBuf};
+use std::rc::Rc;
+use std::sync::{Arc, OnceLock};
 use tiny_skia::{Path, PathBuilder};
 use ttf_parser::{name_id, Face, OutlineBuilder};
 
@@ -14,10 +17,21 @@ struct Entry {
     names: Vec<String>,
 }
 
+enum Source {
+    Data(Arc<Vec<u8>>),
+    File(PathBuf),
+    Dir(PathBuf),
+}
+
+/// Where fonts come from, read on first use. `Fonts::default()` has none: text is not drawn.
 #[derive(Default)]
 pub struct Fonts {
-    entries: Vec<Entry>,
+    sources: Vec<Source>,
+    entries: OnceLock<Vec<Entry>>,
 }
+
+/// Font files above this size are not read.
+const MAX_FONT_FILE: u64 = 64 << 20;
 
 /// Fullwidth to halfwidth, lowercase, no spaces/punctuation, Japanese
 /// generic words in Latin ("ＭＳ Ｐ明朝" and "MS PMincho" meet).
@@ -35,84 +49,41 @@ pub fn normalize(s: &str) -> String {
     o.replace("明朝", "mincho").replace("ゴシック", "gothic")
 }
 
+/// Serif faces fall back to Mincho, the rest to Gothic. The same words as the
+/// web editor's face list (web/editor/app.js).
+fn is_serif(normalized: &str) -> bool {
+    ["mincho", "serif", "times", "century"].iter().any(|w| normalized.contains(w))
+}
+
 impl Fonts {
-    pub fn new() -> Fonts {
-        Fonts::default()
+    /// Fonts given as data (always read).
+    pub fn add_data(&mut self, data: Vec<u8>) {
+        self.sources.push(Source::Data(Arc::new(data)));
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+    /// A font file, or every font file directly in a folder.
+    pub fn add_path(&mut self, path: impl Into<PathBuf>) {
+        let p = path.into();
+        self.sources.push(if p.is_dir() { Source::Dir(p) } else { Source::File(p) });
     }
 
-    /// Adds every face of a font file (a collection adds all its fonts).
-    /// Returns how many faces were added.
-    pub fn add_data(&mut self, data: Vec<u8>) -> usize {
-        let data = Arc::new(data);
-        let n = ttf_parser::fonts_in_collection(&data).unwrap_or(1);
-        let mut added = 0;
-        for index in 0..n {
-            let Ok(face) = Face::parse(&data, index) else { continue };
-            let mut names = Vec::new();
-            for nm in face.names() {
-                if matches!(nm.name_id, name_id::FAMILY | name_id::FULL_NAME | name_id::TYPOGRAPHIC_FAMILY | name_id::POST_SCRIPT_NAME) {
-                    if let Some(s) = nm.to_string() {
-                        let s = normalize(&s);
-                        if !s.is_empty() && !names.contains(&s) {
-                            names.push(s);
-                        }
-                    }
-                }
-            }
-            self.entries.push(Entry { data: data.clone(), index, names });
-            added += 1;
+    /// Where a runner looks, in order: the `fonts` folder beside the program
+    /// (what an installer ships), the paths in `EZPZXDW_FONTS` (separated like
+    /// PATH), then a short list of well-known fonts of this PC (Japanese first).
+    /// A file name found twice is read once.
+    pub fn runner() -> Fonts {
+        let mut f = Fonts::default();
+        if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("fonts"))) {
+            f.add_path(dir);
         }
-        added
-    }
-
-    /// Reads a font file; false when it cannot be read or holds no font.
-    pub fn add_file(&mut self, path: &std::path::Path) -> bool {
-        match std::fs::metadata(path) {
-            Ok(m) if m.is_file() && m.len() <= 64 << 20 => {}
-            _ => return false,
-        }
-        std::fs::read(path).map(|d| self.add_data(d) > 0).unwrap_or(false)
-    }
-
-    /// Adds every font file directly in `dir`.
-    pub fn add_dir(&mut self, dir: &std::path::Path) -> usize {
-        let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
-        let mut files: Vec<_> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
-        files.sort();
-        files
-            .iter()
-            .filter(|p| matches!(p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(), Some("ttf" | "ttc" | "otf")))
-            .filter(|p| self.add_file(p))
-            .count()
-    }
-
-    /// A short list of well-known fonts of this PC (Japanese first), plus
-    /// the folders in `EZPZXDW_FONTS` (separated like PATH).
-    pub fn system() -> Fonts {
-        let mut f = Fonts::new();
-        f.add_system();
-        f
-    }
-
-    /// Adds what [`Fonts::system`] finds.
-    pub fn add_system(&mut self) {
-        let f = self;
         if let Some(v) = std::env::var_os("EZPZXDW_FONTS") {
-            for d in std::env::split_paths(&v) {
-                if d.is_dir() {
-                    f.add_dir(&d);
-                } else {
-                    f.add_file(&d);
-                }
+            for p in std::env::split_paths(&v) {
+                f.add_path(p);
             }
         }
-        let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+        let mut dirs: Vec<PathBuf> = Vec::new();
         if let Some(w) = std::env::var_os("WINDIR").or_else(|| std::env::var_os("SystemRoot")) {
-            dirs.push(std::path::Path::new(&w).join("Fonts"));
+            dirs.push(FsPath::new(&w).join("Fonts"));
         }
         for d in ["/usr/share/fonts", "/usr/share/fonts/truetype", "/usr/share/fonts/opentype", "/Library/Fonts", "/System/Library/Fonts"] {
             dirs.push(d.into());
@@ -124,60 +95,158 @@ impl Fonts {
         for d in &dirs {
             for w in WANTED {
                 // Windows file names are case-insensitive; elsewhere try as written
-                f.add_file(&d.join(w));
+                f.sources.push(Source::File(d.join(w)));
             }
             if !cfg!(windows) {
                 for sub in ["noto", "opentype/noto", "truetype/noto", "truetype/dejavu", "truetype/liberation", "ipa", "ipafont"] {
-                    f.add_dir(&d.join(sub));
+                    f.sources.push(Source::Dir(d.join(sub)));
                 }
             }
         }
+        f
     }
 
-    /// Face names (normalized) for diagnostics.
-    pub fn names(&self) -> Vec<String> {
-        self.entries.iter().filter_map(|e| e.names.first().cloned()).collect()
+    /// No fonts at all (reads the sources on first call).
+    pub fn is_empty(&self) -> bool {
+        self.entries().is_empty()
     }
 
-    /// Faces to try for `face`, best first: those named so, then all others
-    /// (so a character the named font lacks can come from another).
-    pub(crate) fn candidates(&self, face: &str) -> Vec<usize> {
+    fn entries(&self) -> &[Entry] {
+        self.entries.get_or_init(|| {
+            let (mut entries, mut seen) = (Vec::new(), Vec::<String>::new());
+            let mut file = |p: &FsPath, entries: &mut Vec<Entry>| {
+                let name = p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+                if seen.contains(&name) || !std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() <= MAX_FONT_FILE) {
+                    return;
+                }
+                if let Ok(data) = std::fs::read(p) {
+                    if add_faces(entries, Arc::new(data)) > 0 {
+                        seen.push(name);
+                    }
+                }
+            };
+            for s in &self.sources {
+                match s {
+                    Source::Data(d) => {
+                        add_faces(&mut entries, d.clone());
+                    }
+                    Source::File(p) => file(p, &mut entries),
+                    Source::Dir(d) => {
+                        let Ok(rd) = std::fs::read_dir(d) else { continue };
+                        let mut files: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+                        files.sort();
+                        for p in files.iter().filter(|p| {
+                            matches!(p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(), Some("ttf" | "ttc" | "otf"))
+                        }) {
+                            file(p, &mut entries);
+                        }
+                    }
+                }
+            }
+            entries
+        })
+    }
+
+    /// Faces to try for `face`, best first: those named so (or of the same
+    /// style), then all others, so a character the named font lacks can come
+    /// from another.
+    fn candidates(&self, face: &str) -> Vec<usize> {
+        let entries = self.entries();
         let want = normalize(face);
-        let mut best: Vec<usize> = Vec::new();
-        if !want.is_empty() {
-            for (i, e) in self.entries.iter().enumerate() {
-                if e.names.iter().any(|n| *n == want) {
+        let mut taken = vec![false; entries.len()];
+        let mut best = Vec::with_capacity(entries.len());
+        let mut take = |pred: &dyn Fn(&Entry) -> bool, best: &mut Vec<usize>| {
+            for (i, e) in entries.iter().enumerate() {
+                if !taken[i] && pred(e) {
+                    taken[i] = true;
                     best.push(i);
                 }
             }
+        };
+        if !want.is_empty() {
+            take(&|e| e.names.iter().any(|n| *n == want), &mut best);
             if best.is_empty() {
                 // "msmincho" for "mspmincho" and the like: same style word
-                let style = if want.contains("mincho") || want.contains("serif") || want.contains("times") { "mincho" } else { "gothic" };
-                for (i, e) in self.entries.iter().enumerate() {
-                    if e.names.iter().any(|n| n.contains(style)) {
-                        best.push(i);
+                let style = if is_serif(&want) { "mincho" } else { "gothic" };
+                take(&|e| e.names.iter().any(|n| n.contains(style)), &mut best);
+            }
+        }
+        take(&|_| true, &mut best);
+        best
+    }
+}
+
+/// Adds every face of a font file (a collection adds all its fonts); how many.
+fn add_faces(entries: &mut Vec<Entry>, data: Arc<Vec<u8>>) -> usize {
+    let n = ttf_parser::fonts_in_collection(&data).unwrap_or(1);
+    let before = entries.len();
+    for index in 0..n {
+        let Ok(face) = Face::parse(&data, index) else { continue };
+        let mut names = Vec::new();
+        for nm in face.names() {
+            if matches!(nm.name_id, name_id::FAMILY | name_id::FULL_NAME | name_id::TYPOGRAPHIC_FAMILY | name_id::POST_SCRIPT_NAME) {
+                if let Some(s) = nm.to_string() {
+                    let s = normalize(&s);
+                    if !s.is_empty() && !names.contains(&s) {
+                        names.push(s);
                     }
                 }
             }
         }
-        for i in 0..self.entries.len() {
-            if !best.contains(&i) {
-                best.push(i);
-            }
-        }
-        best
+        entries.push(Entry { data: data.clone(), index, names });
     }
-
-    pub(crate) fn face(&self, i: usize) -> Option<Face<'_>> {
-        let e = self.entries.get(i)?;
-        Face::parse(&e.data, e.index).ok()
-    }
+    entries.len() - before
 }
 
-/// A glyph's outline in em units (y up), and its advance.
+/// A glyph's outline in em units (y up), its advance, and whether its face is
+/// bold / italic already (so no synthetic style is added).
 pub(crate) struct Glyph {
     pub path: Option<Path>,
     pub advance: f32,
+    pub bold: bool,
+    pub italic: bool,
+}
+
+/// Glyph lookup for one page: each face is parsed once, each (face, char) and
+/// each face name is resolved once.
+pub(crate) struct Shaper<'f> {
+    fonts: &'f Fonts,
+    faces: Vec<Option<Option<Face<'f>>>>,
+    glyphs: HashMap<(usize, char), Option<Rc<Glyph>>>,
+    candidates: HashMap<String, Rc<Vec<usize>>>,
+}
+
+impl<'f> Shaper<'f> {
+    pub fn new(fonts: &'f Fonts) -> Shaper<'f> {
+        Shaper { fonts, faces: Vec::new(), glyphs: HashMap::new(), candidates: HashMap::new() }
+    }
+
+    /// The glyph for `c`, from the faces `face_name` asks for first.
+    pub fn glyph(&mut self, face_name: &str, c: char) -> Option<Rc<Glyph>> {
+        let cands = match self.candidates.get(face_name) {
+            Some(c) => c.clone(),
+            None => {
+                let c = Rc::new(self.fonts.candidates(face_name));
+                self.candidates.insert(face_name.to_string(), c.clone());
+                c
+            }
+        };
+        cands.iter().find_map(|&k| self.glyph_in(k, c))
+    }
+
+    fn glyph_in(&mut self, k: usize, c: char) -> Option<Rc<Glyph>> {
+        if let Some(g) = self.glyphs.get(&(k, c)) {
+            return g.clone();
+        }
+        let entries = self.fonts.entries();
+        if self.faces.len() < entries.len() {
+            self.faces.resize_with(entries.len(), || None);
+        }
+        let face = self.faces[k].get_or_insert_with(|| Face::parse(&entries[k].data, entries[k].index).ok());
+        let g = face.as_ref().and_then(|f| glyph(f, c)).map(Rc::new);
+        self.glyphs.insert((k, c), g.clone());
+        g
+    }
 }
 
 struct Pb(PathBuilder, f32);
@@ -200,12 +269,11 @@ impl OutlineBuilder for Pb {
 }
 
 /// The glyph of `c` in `face`, if the font has one.
-pub(crate) fn glyph(face: &Face, c: char) -> Option<Glyph> {
+fn glyph(face: &Face, c: char) -> Option<Glyph> {
     let id = face.glyph_index(c)?;
-    let upem = face.units_per_em().max(1) as f32;
-    let k = 1.0 / upem;
+    let k = 1.0 / face.units_per_em().max(1) as f32;
     let mut pb = Pb(PathBuilder::new(), k);
     let has = face.outline_glyph(id, &mut pb).is_some();
     let advance = face.glyph_hor_advance(id).map(|a| a as f32 * k).unwrap_or(0.5);
-    Some(Glyph { path: if has { pb.0.finish() } else { None }, advance })
+    Some(Glyph { path: if has { pb.0.finish() } else { None }, advance, bold: face.is_bold(), italic: face.is_italic() })
 }

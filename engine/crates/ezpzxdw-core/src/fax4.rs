@@ -20,9 +20,7 @@ pub fn decode(data: &[u8], w: u32, h: u32) -> Option<Image> {
             let start = (pair[0] as usize).min(wu);
             let end = pair.get(1).map_or(wu, |&e| (e as usize).min(wu));
             for p in line[start * 4..end * 4].chunks_exact_mut(4) {
-                p[0] = 0;
-                p[1] = 0;
-                p[2] = 0;
+                p[..3].fill(0);
             }
         }
         row += 1;

@@ -143,7 +143,7 @@ Rust では `Document::open_with(bytes, &Limits { max_pages: 300, ..Default::def
 ```
 engine/crates/ezpzxdw-core   読み込み、描画（EMF/WMF/DW → 表示リスト）、編集、保存、PDF
 engine/crates/ezpzxdw-cli    `ezpzxdw` コマンド: info, tree, pages, render, png, text, edit, check …
-engine/crates/ezpzxdw-raster 頁を PNG に描く（塗り・線・画像。文字は描かない）。`ezpzxdw png <file> <pages> <out> [dpi]`
+engine/crates/ezpzxdw-raster 頁を PNG に描く（塗り・線・画像と、PC のフォントで文字）。`ezpzxdw png <file> <pages> <out> [dpi]`
 engine/crates/ezpzxdw-wasm   ブラウザ用バインディング
 web/                       エディタ（ビルド: web/build.sh → web/dist/ezpzxdw-editor.html）
 web/worker/                信頼できないファイルを Web Worker で読む（ezpzxdw-safe.js）

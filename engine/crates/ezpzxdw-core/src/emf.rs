@@ -1507,9 +1507,7 @@ pub fn external_picture(d: &[u8]) -> Option<(Image, bool)> {
         return Some((Image { w: 0, h: 0, data: ImageData::Jpeg(d.to_vec()) }, false));
     }
     // a DIB: BITMAPINFOHEADER then bits (possibly compressed, see dib)
-    let inf = dib::info(d)?;
-    let img = dib::decode_stored(d)?;
-    Some((img, !inf.top_down))
+    dib::decode_stored(d)
 }
 
 #[cfg(test)]

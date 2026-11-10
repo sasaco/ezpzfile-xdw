@@ -39,8 +39,8 @@ fn failure(category: &'static str, code: &'static str, message: impl Into<String
 #[derive(Debug, PartialEq)]
 enum Command {
     Inspect,
-    Text,
-    Png,
+    Text { include_hidden: bool },
+    Png { pages: String, dpi: f32 },
 }
 
 #[derive(Debug)]
@@ -48,9 +48,6 @@ struct Request {
     command: Command,
     input: PathBuf,
     output_dir: PathBuf,
-    include_hidden: bool,
-    pages: Option<String>,
-    dpi: f32,
 }
 
 /// Most pages in one `png` call, and the dpi range (a page is about 1 s at 100 dpi).
@@ -59,92 +56,61 @@ const MIN_DPI: f32 = 30.0;
 const MAX_DPI: f32 = 300.0;
 const DEFAULT_DPI: f32 = 100.0;
 
-/// "3", "2-5", "1,4,7-8" or "all" as 0-based page numbers, in order, without repeats.
+/// `--pages` ("3", "2-5", "1,4,7-8" or "all") as 0-based page numbers, in order, without repeats.
 fn page_list(spec: &str, count: usize) -> Result<Vec<usize>, String> {
-    let bad = || format!("--pages は 3・2-5・1,4,7・all のどれかの形です: {spec}");
-    let mut out: Vec<usize> = Vec::new();
-    let ranges: Vec<(usize, usize)> = if spec == "all" {
-        vec![(1, count)]
-    } else {
-        let mut v = Vec::new();
-        for part in spec.split(',') {
-            let (a, b) = match part.split_once('-') {
-                Some((a, b)) => (a.parse::<usize>().map_err(|_| bad())?, b.parse::<usize>().map_err(|_| bad())?),
-                None => {
-                    let n = part.parse::<usize>().map_err(|_| bad())?;
-                    (n, n)
-                }
-            };
-            if a == 0 || b < a {
-                return Err(bad());
-            }
-            v.push((a, b));
-        }
-        v
-    };
-    for (a, b) in ranges {
-        if b > count {
-            return Err(format!("ページ {b} はありません（全 {count} ページ）"));
-        }
-        for p in a..=b {
-            if !out.contains(&(p - 1)) {
-                out.push(p - 1);
-            }
-        }
-    }
-    if out.is_empty() {
-        return Err("ページがありません".into());
-    }
-    Ok(out)
+    ezpzxdw_raster::parse_pages(spec, count).map_err(|e| match e {
+        ezpzxdw_raster::PagesError::Syntax => format!("--pages は 3・2-5・1,4,7・all のどれかの形です: {spec}"),
+        ezpzxdw_raster::PagesError::NoPage(p, n) => format!("ページ {p} はありません（全 {n} ページ）"),
+    })
 }
 
 fn parse(args: &[String]) -> Result<Request, Failure> {
     let request = |m: String| failure("request", "INVALID_ARGUMENT", m);
-    let command = match args.first().map(String::as_str) {
-        Some("inspect") => Command::Inspect,
-        Some("text") => Command::Text,
-        Some("png") => Command::Png,
+    let name = match args.first().map(String::as_str) {
+        Some(c @ ("inspect" | "text" | "png")) => c,
         Some(other) => return Err(request(format!("知らないコマンドです: {other}（inspect・text・png）"))),
         None => return Err(request("コマンドがありません（inspect・text・png）".into())),
     };
     let (mut input, mut output_dir, mut include_hidden, mut pages, mut dpi) = (None, None, None, None, None);
     let mut rest = args[1..].iter();
-    while let Some(name) = rest.next() {
-        let value = rest.next().ok_or_else(|| request(format!("{name} に値がありません")))?;
-        let slot = match (name.as_str(), &command) {
+    while let Some(arg) = rest.next() {
+        let value = rest.next().ok_or_else(|| request(format!("{arg} に値がありません")))?;
+        let slot = match (arg.as_str(), name) {
             ("--input", _) => &mut input,
             ("--output-dir", _) => &mut output_dir,
-            ("--include-hidden", Command::Text) => &mut include_hidden,
-            ("--pages", Command::Png) => &mut pages,
-            ("--dpi", Command::Png) => &mut dpi,
-            _ => return Err(request(format!("知らない引数です: {name}"))),
+            ("--include-hidden", "text") => &mut include_hidden,
+            ("--pages", "png") => &mut pages,
+            ("--dpi", "png") => &mut dpi,
+            _ => return Err(request(format!("知らない引数です: {arg}"))),
         };
         if slot.replace(value.clone()).is_some() {
-            return Err(request(format!("{name} が 2 回あります")));
+            return Err(request(format!("{arg} が 2 回あります")));
         }
     }
-    let include_hidden = match include_hidden.as_deref() {
-        None | Some("false") => false,
-        Some("true") => true,
-        Some(other) => return Err(request(format!("--include-hidden は true か false です: {other}"))),
-    };
-    if command == Command::Png && pages.is_none() {
-        return Err(request("--pages がありません（3・2-5・1,4,7・all）".into()));
-    }
-    let dpi = match dpi.as_deref() {
-        None => DEFAULT_DPI,
-        Some(v) => match v.parse::<f32>() {
-            Ok(n) if (MIN_DPI..=MAX_DPI).contains(&n) => n,
-            _ => return Err(request(format!("--dpi は {MIN_DPI}〜{MAX_DPI} の数です: {v}"))),
+    let command = match name {
+        "inspect" => Command::Inspect,
+        "text" => Command::Text {
+            include_hidden: match include_hidden.as_deref() {
+                None | Some("false") => false,
+                Some("true") => true,
+                Some(other) => return Err(request(format!("--include-hidden は true か false です: {other}"))),
+            },
+        },
+        _ => Command::Png {
+            pages: pages.ok_or_else(|| request("--pages がありません（3・2-5・1,4,7・all）".into()))?,
+            dpi: match dpi.as_deref() {
+                None => DEFAULT_DPI,
+                Some(v) => match v.parse::<f32>() {
+                    Ok(n) if (MIN_DPI..=MAX_DPI).contains(&n) => n,
+                    _ => return Err(request(format!("--dpi は {MIN_DPI}〜{MAX_DPI} の数です: {v}"))),
+                },
+            },
         },
     };
     Ok(Request {
         command,
         input: input.ok_or_else(|| request("--input がありません".into()))?.into(),
         output_dir: output_dir.ok_or_else(|| request("--output-dir がありません".into()))?.into(),
-        include_hidden,
-        pages,
-        dpi,
     })
 }
 
@@ -318,27 +284,18 @@ fn text(mut d: Document, dir: &Path, include_hidden: bool) -> Result<Outcome, Fa
     })
 }
 
-/// Fonts for the pages: the `fonts` folder beside the runner first (what the installer ships), then `EZPZXDW_FONTS` and the PC's.
-fn fonts() -> ezpzxdw_raster::Fonts {
-    let mut f = ezpzxdw_raster::Fonts::new();
-    if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("fonts"))) {
-        f.add_dir(&dir);
-    }
-    f.add_system();
-    f
-}
-
 fn png(d: &Document, dir: &Path, pages: &str, dpi: f32) -> Result<Outcome, Failure> {
     let list = page_list(pages, d.pages.len()).map_err(|m| failure("request", "INVALID_ARGUMENT", m))?;
     if list.len() > MAX_PNG_PAGES {
         return Err(failure("request", "TOO_MANY_PAGES", format!("1 回に画像にできるのは {MAX_PNG_PAGES} ページまでです（{} ページ指定されました）", list.len())));
     }
-    let fonts = fonts();
+    // the fonts folder beside the runner (what the installer ships), EZPZXDW_FONTS, then the PC's; read on the first text
+    let fonts = ezpzxdw_raster::Fonts::runner();
     let (mut records, mut artifacts, mut messages) = (Vec::new(), Vec::new(), Vec::new());
-    let (mut text_runs, mut missing, mut unreadable) = (0usize, 0usize, Vec::new());
+    let (mut text_not_drawn, mut missing, mut unreadable) = (0usize, 0usize, Vec::new());
     for k in list {
         let rendered = d.render(k).map_err(|e| e.to_string()).and_then(|display| {
-            let r = ezpzxdw_raster::render_with(&display, dpi, Some(&fonts))?;
+            let r = ezpzxdw_raster::render(&display, dpi, &fonts)?;
             let data = r.png()?;
             Ok((display, r, data))
         });
@@ -346,11 +303,10 @@ fn png(d: &Document, dir: &Path, pages: &str, dpi: f32) -> Result<Outcome, Failu
             Ok((display, r, data)) => {
                 let name = format!("page-{:04}.png", k + 1);
                 artifacts.push(artifact(dir, &name, "page-image", "image/png", &data)?);
-                let runs = display.items.iter().filter(|i| matches!(i, ezpzxdw_core::gfx::Item::Text { .. })).count();
-                text_runs += r.skipped_text;
+                text_not_drawn += r.skipped_text;
                 missing += r.missing_glyphs;
                 records.push(json!({ "page": k + 1, "file": name, "widthPx": r.pixmap.width(), "heightPx": r.pixmap.height(),
-                    "textRuns": runs, "textNotDrawn": r.skipped_text, "missingGlyphs": r.missing_glyphs,
+                    "textRuns": r.text_runs, "textNotDrawn": r.skipped_text, "missingGlyphs": r.missing_glyphs,
                     "picturesNotDecoded": r.skipped_images, "skipped": display.skipped }));
             }
             Err(e) => {
@@ -361,9 +317,9 @@ fn png(d: &Document, dir: &Path, pages: &str, dpi: f32) -> Result<Outcome, Failu
             }
         }
     }
-    if text_runs > 0 {
+    if text_not_drawn > 0 {
         messages.push(json!({ "level": "warning", "code": "NO_FONTS", "path": null,
-            "text": format!("フォントが見つからず、文字 {text_runs} 個所を描けませんでした（文字は xdw_text で読めます）") }));
+            "text": format!("フォントが見つからず、文字 {text_not_drawn} 個所を描けませんでした（文字は xdw_text で読めます）") }));
     }
     if missing > 0 {
         messages.push(json!({ "level": "warning", "code": "MISSING_GLYPHS", "path": null,
@@ -374,7 +330,7 @@ fn png(d: &Document, dir: &Path, pages: &str, dpi: f32) -> Result<Outcome, Failu
     artifacts.push(artifact(dir, "pages.json", "page-images", "application/json", &pretty(&report))?);
     Ok(Outcome {
         summary: json!({ "command": "png", "kind": kind(d), "pageCount": d.pages.len(), "dpi": dpi,
-            "imageCount": images, "unreadablePages": unreadable, "textNotDrawn": text_runs, "missingGlyphs": missing }),
+            "imageCount": images, "unreadablePages": unreadable, "textNotDrawn": text_not_drawn, "missingGlyphs": missing }),
         messages,
         artifacts,
     })
@@ -386,10 +342,10 @@ fn run(args: &[String]) -> Result<Outcome, Failure> {
         return Err(failure("request", "INVALID_ARGUMENT", "--output-dir のフォルダーがありません"));
     }
     let d = open(&request.input)?;
-    match request.command {
+    match &request.command {
         Command::Inspect => inspect(&d, &request.output_dir),
-        Command::Text => text(d, &request.output_dir, request.include_hidden),
-        Command::Png => png(&d, &request.output_dir, request.pages.as_deref().unwrap_or("1"), request.dpi),
+        Command::Text { include_hidden } => text(d, &request.output_dir, *include_hidden),
+        Command::Png { pages, dpi } => png(&d, &request.output_dir, pages, *dpi),
     }
 }
 
@@ -441,15 +397,18 @@ mod tests {
     #[test]
     fn parses_the_commands() {
         let r = parse(&args(&["text", "--input", "a.xdw", "--output-dir", "o", "--include-hidden", "true"])).unwrap();
-        assert_eq!((r.command, r.include_hidden), (Command::Text, true));
+        assert_eq!(r.command, Command::Text { include_hidden: true });
         let r = parse(&args(&["inspect", "--output-dir", "o", "--input", "a.xdw"])).unwrap();
-        assert_eq!((r.command, r.include_hidden), (Command::Inspect, false));
+        assert_eq!(r.command, Command::Inspect);
+        let r = parse(&args(&["png", "--input", "a.xdw", "--output-dir", "o", "--pages", "2-3"])).unwrap();
+        assert_eq!(r.command, Command::Png { pages: "2-3".into(), dpi: DEFAULT_DPI });
     }
 
     #[test]
     fn lists_pages() {
         assert_eq!(page_list("all", 3).unwrap(), vec![0, 1, 2]);
         assert_eq!(page_list("2-3,1,2", 5).unwrap(), vec![1, 2, 0]);
+        assert!(page_list("4", 3).unwrap_err().contains("ページ 4 はありません"));
         for bad in ["0", "4", "3-2", "a", "", "1,,2", "1-9"] {
             assert!(page_list(bad, 3).is_err(), "{bad}");
         }

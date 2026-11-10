@@ -221,28 +221,33 @@ pub fn info_len(d: &[u8]) -> Option<usize> {
 /// each `stored size, size, rows` (u32) followed by that many bytes of bits
 /// compressed with LHA -lh5-. Small pictures have one strip; scanned pages
 /// are cut into strips of a few hundred rows.
-pub fn decode_stored(d: &[u8]) -> Option<Image> {
+///
+/// Returns the picture and whether its rows were stored bottom-up (what a
+/// caller cropping in DIB terms needs).
+pub fn decode_stored(d: &[u8]) -> Option<(Image, bool)> {
     let at = info_len(d)?;
+    let bmi = &d[..at];
     let rest = d.get(at..)?;
-    if let Some((bits, strips)) = stored_strips(rest) {
-        if strips > 1 {
-            // Scanned pages in strips keep their rows top-first although the
-            // height is positive (checked against the same book's G4 pages):
-            // read them as a top-down DIB.
-            let mut bmi = d[..at].to_vec();
-            let h = i32::from_le_bytes([bmi[8], bmi[9], bmi[10], bmi[11]]);
-            if h > 0 {
-                bmi[8..12].copy_from_slice(&(-h).to_le_bytes());
-            }
-            return decode(&bmi, &bits);
+    let Some((bits, strips)) = stored_strips(rest) else {
+        return Some((decode(bmi, rest)?, !info(bmi)?.top_down));
+    };
+    if strips > 1 {
+        // Scanned pages in strips keep their rows top-first although the
+        // height is positive (checked against the same book's G4 pages):
+        // read them as a top-down DIB.
+        let mut bmi = bmi.to_vec();
+        let h = i32::from_le_bytes([bmi[8], bmi[9], bmi[10], bmi[11]]);
+        if h > 0 {
+            bmi[8..12].copy_from_slice(&(-h).to_le_bytes());
         }
-        return decode(&d[..at], &bits);
+        return Some((decode(&bmi, &bits)?, false));
     }
-    decode(&d[..at], rest)
+    Some((decode(bmi, &bits)?, !info(bmi)?.top_down))
 }
 
 /// The bits of a stored DIB's strips, expanded and joined, and the number of
 /// strips; None when `rest` is not in that form (then it is the bits themselves).
+/// Each strip's expansion is checked and counted by [`crate::lzh::decompress`].
 fn stored_strips(rest: &[u8]) -> Option<(Vec<u8>, usize)> {
     if rest.len() < 16 {
         return None;
@@ -261,12 +266,7 @@ fn stored_strips(rest: &[u8]) -> Option<(Vec<u8>, usize)> {
         if size == 0 {
             return None;
         }
-        // the decompressor enforces maxExpand / maxRatio per block; the strips together count as memory
-        let strip = crate::lzh::decompress(data, size).ok()?;
-        if n > 1 && !crate::limits::charge(strip.len()) {
-            return None;
-        }
-        bits.extend(strip);
+        bits.extend(crate::lzh::decompress(data, size).ok()?);
         at += 12 + stored;
     }
     Some((bits, n))
@@ -336,10 +336,10 @@ mod tests {
         // strips hold the rows top-first, as a top-down DIB would
         let mut top_down = bmi.clone();
         top_down[8..12].copy_from_slice(&(-2i32).to_le_bytes());
-        assert_eq!(decode_stored(&d).unwrap(), decode(&top_down, &joined).unwrap());
-        // the one-strip form still reads
+        assert_eq!(decode_stored(&d).unwrap(), (decode(&top_down, &joined).unwrap(), false));
+        // the one-strip form still reads, bottom-up as its header says
         let one = encode_stored(&bmi, &joined, 2);
-        assert_eq!(decode_stored(&one).unwrap(), decode(&bmi, &joined).unwrap());
+        assert_eq!(decode_stored(&one).unwrap(), (decode(&bmi, &joined).unwrap(), true));
     }
 
     #[test]

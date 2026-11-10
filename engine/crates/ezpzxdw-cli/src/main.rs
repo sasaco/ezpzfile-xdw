@@ -18,7 +18,8 @@ USAGE:
   ezpzxdw png    <file> <pages> <out> [dpi]
                                  draw pages to PNG (pages: 3, 3-5, 1,4 or all; default 150 dpi).
                                  One page: <out> is the file. Several: <out> is a folder of p<N>.png.
-                                 Text runs are not drawn; read them with `text`.
+                                 Text is drawn with the fonts beside the program, in EZPZXDW_FONTS
+                                 and of the PC (EZPZXDW_NO_TEXT=1 leaves it out).
   ezpzxdw text   <file> [--include-hidden]
                                  text of every page (text that a box or picture
                                  drawn later covers is left out unless asked for)
@@ -51,28 +52,6 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-/// "3", "3-5", "1,4,7-8" or "all" (1-based) → 0-based page indexes.
-fn page_list(spec: &str, n: usize) -> Result<Vec<usize>, Box<dyn std::error::Error>> {
-    if spec == "all" {
-        return Ok((0..n).collect());
-    }
-    let mut pages = Vec::new();
-    for part in spec.split(',') {
-        let (from, to) = match part.split_once('-') {
-            Some((a, b)) => (a.trim().parse::<usize>()?, b.trim().parse::<usize>()?),
-            None => {
-                let p = part.trim().parse::<usize>()?;
-                (p, p)
-            }
-        };
-        if from == 0 || to < from || to > n {
-            return Err(format!("no page {part} (the document has {n})").into());
-        }
-        pages.extend(from - 1..to);
-    }
-    Ok(pages)
 }
 
 fn show_value(v: &[u8]) -> String {
@@ -260,7 +239,10 @@ fn run(a: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         "png" => {
             let d = ezpzxdw_core::doc::Document::open(b.clone())?;
             let n = d.pages.len();
-            let pages = page_list(a.get(3).ok_or("pages")?, n)?;
+            let pages = ezpzxdw_raster::parse_pages(a.get(3).ok_or("pages")?, n).map_err(|e| match e {
+                ezpzxdw_raster::PagesError::Syntax => "pages: 3, 3-5, 1,4,7-8 or all".to_string(),
+                ezpzxdw_raster::PagesError::NoPage(p, n) => format!("no page {p} (the document has {n})"),
+            })?;
             let target = a.get(4).ok_or("missing out")?;
             let dpi: f32 = a.get(5).map(|s| s.parse()).transpose()?.unwrap_or(150.0);
             let single = pages.len() == 1 && !std::path::Path::new(target).is_dir();
@@ -268,10 +250,10 @@ fn run(a: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 std::fs::create_dir_all(target)?;
             }
             // fonts of this PC (and EZPZXDW_FONTS); EZPZXDW_NO_TEXT=1 leaves text out
-            let fonts = if std::env::var_os("EZPZXDW_NO_TEXT").is_some() { ezpzxdw_raster::Fonts::new() } else { ezpzxdw_raster::Fonts::system() };
+            let fonts = if std::env::var_os("EZPZXDW_NO_TEXT").is_some() { ezpzxdw_raster::Fonts::default() } else { ezpzxdw_raster::Fonts::runner() };
             for k in pages {
                 let disp = d.render(k)?;
-                let r = ezpzxdw_raster::render_with(&disp, dpi, Some(&fonts))?;
+                let r = ezpzxdw_raster::render(&disp, dpi, &fonts)?;
                 let path = if single { std::path::PathBuf::from(target) } else { std::path::Path::new(target).join(format!("p{}.png", k + 1)) };
                 std::fs::write(&path, r.png()?)?;
                 let mut notes = Vec::new();

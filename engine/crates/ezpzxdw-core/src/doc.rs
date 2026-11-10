@@ -406,6 +406,15 @@ impl Document {
         let rot = ((o.rotation % 360) + 360) % 360;
         // the drawing's own box before rotation
         let (bw, bh) = if rot == 90 || rot == 270 { (h, w) } else { (w, h) };
+        // a picture that is the whole drawing, stretched over its box
+        let fill_box = |out: &mut Display, img: Option<Image>, what: &str| match img {
+            Some(img) => {
+                out.images.push(img);
+                let image = (out.images.len() - 1) as u32;
+                out.items.push(Item::Image { image, m: [bw as f32, 0.0, 0.0, bh as f32, 0.0, 0.0], clip: 0, alpha: 1.0, mul: false });
+            }
+            None => out.skipped.push(format!("{}: {what} not readable", o.kind_name)),
+        };
         match c.kind {
             4 | 1 if crate::wmf::is_wmf(&c.data) => {
                 crate::wmf::render(&c.data, [0.0, 0.0, bw, bh], &pics, out);
@@ -415,40 +424,21 @@ impl Document {
             }
             5 => {
                 // a scanned page as DocuWorks 10 stores it: a JPEG
-                match crate::pages::jpeg_size(&c.data).filter(|&(pw, ph)| limits::image_size(pw as usize, ph as usize) && limits::charge(c.data.len())) {
-                    Some((pw, ph)) => {
-                        out.images.push(Image { w: pw, h: ph, data: ImageData::Jpeg(c.data.clone()) });
-                        let image = (out.images.len() - 1) as u32;
-                        out.items.push(Item::Image { image, m: [bw as f32, 0.0, 0.0, bh as f32, 0.0, 0.0], clip: 0, alpha: 1.0, mul: false });
-                    }
-                    None => out.skipped.push(format!("{}: picture page not readable", o.kind_name)),
-                }
+                let img = crate::pages::jpeg_size(&c.data)
+                    .filter(|&(pw, ph)| limits::image_size(pw as usize, ph as usize) && limits::charge(c.data.len()))
+                    .map(|(pw, ph)| Image { w: pw, h: ph, data: ImageData::Jpeg(c.data.clone()) });
+                fill_box(out, img, "picture page");
             }
-            1 | 7 => {
-                // a bitmap page (DIB)
-                if let Some((img, _)) = emf::external_picture(&c.data) {
-                    out.images.push(img);
-                    let image = (out.images.len() - 1) as u32;
-                    out.items.push(Item::Image { image, m: [bw as f32, 0.0, 0.0, bh as f32, 0.0, 0.0], clip: 0, alpha: 1.0, mul: false });
-                } else {
-                    out.skipped.push(format!("{}: bitmap not readable", o.kind_name));
-                }
-            }
+            // a bitmap page (DIB)
+            1 | 7 => fill_box(out, emf::external_picture(&c.data).map(|(img, _)| img), "bitmap"),
             9 => {
                 // a scanned bi-level page: CCITT Group 4 (T.6) with no header; the
                 // pixel size is in fields 0x87 × 0x88 of the drawing (DocuWorks scans)
                 let img = c
                     .px
-                    .filter(|&(pw, ph)| limits::image_size(pw as usize, ph as usize) && limits::charge(pw as usize * ph as usize * 4))
+                    .filter(|&(pw, ph)| limits::image(pw as usize, ph as usize))
                     .and_then(|(pw, ph)| crate::fax4::decode(&c.data, pw, ph));
-                match img {
-                    Some(img) => {
-                        out.images.push(img);
-                        let image = (out.images.len() - 1) as u32;
-                        out.items.push(Item::Image { image, m: [bw as f32, 0.0, 0.0, bh as f32, 0.0, 0.0], clip: 0, alpha: 1.0, mul: false });
-                    }
-                    None => out.skipped.push(format!("{}: scanned page (G4) not readable", o.kind_name)),
-                }
+                fill_box(out, img, "scanned page (G4)");
             }
             k => out.skipped.push(format!("{}: drawing kind {k}", o.kind_name)),
         }
@@ -483,12 +473,6 @@ pub struct Content {
 }
 
 impl Content {
-    pub fn of_entry(b: &[u8], e: &Entry) -> Option<Content> {
-        match &e.body {
-            Body::Fields { kind, .. } => Some(Content { kind: kind.unwrap_or(0) as i64, data: e.expanded(b).ok()?, px: None }),
-            Body::Raw(..) => None,
-        }
-    }
     /// From an inline body (the fields of an entry body).
     pub fn of_fields(v: &[u8]) -> Option<Content> {
         let items = tlv::list(v, 0, v.len()).ok()?;
