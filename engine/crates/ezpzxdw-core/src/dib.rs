@@ -216,20 +216,60 @@ pub fn info_len(d: &[u8]) -> Option<usize> {
     Some(size + inf.palette.len() * 4 + if inf.masks.is_some() && size == 40 { 12 } else { 0 })
 }
 
-/// A DIB as DocuWorks stores it in pictures and thumbnails (entry kind 7):
-/// BITMAPINFO, then either the bits, or a block `1, stored size, size,
-/// rows` (u32 each) followed by the bits compressed with LHA -lh5-.
+/// A DIB as DocuWorks stores it in pictures, thumbnails and bitmap pages
+/// (entry kind 7): BITMAPINFO, then either the bits, or `n` (u32) strips,
+/// each `stored size, size, rows` (u32) followed by that many bytes of bits
+/// compressed with LHA -lh5-. Small pictures have one strip; scanned pages
+/// are cut into strips of a few hundred rows.
 pub fn decode_stored(d: &[u8]) -> Option<Image> {
     let at = info_len(d)?;
     let rest = d.get(at..)?;
-    if rest.len() >= 16 && u32le(rest, 0) == 1 {
-        let (stored, size) = (u32le(rest, 4) as usize, u32le(rest, 8) as usize);
-        if stored <= rest.len() - 16 && size > 0 {
-            let bits = crate::lzh::decompress(&rest[16..16 + stored], size).ok()?;
-            return decode(&d[..at], &bits);
+    if let Some((bits, strips)) = stored_strips(rest) {
+        if strips > 1 {
+            // Scanned pages in strips keep their rows top-first although the
+            // height is positive (checked against the same book's G4 pages):
+            // read them as a top-down DIB.
+            let mut bmi = d[..at].to_vec();
+            let h = i32::from_le_bytes([bmi[8], bmi[9], bmi[10], bmi[11]]);
+            if h > 0 {
+                bmi[8..12].copy_from_slice(&(-h).to_le_bytes());
+            }
+            return decode(&bmi, &bits);
         }
+        return decode(&d[..at], &bits);
     }
     decode(&d[..at], rest)
+}
+
+/// The bits of a stored DIB's strips, expanded and joined, and the number of
+/// strips; None when `rest` is not in that form (then it is the bits themselves).
+fn stored_strips(rest: &[u8]) -> Option<(Vec<u8>, usize)> {
+    if rest.len() < 16 {
+        return None;
+    }
+    // a strip count, not the first bytes of plain bits: every strip must parse
+    let n = u32le(rest, 0) as usize;
+    if n == 0 || n > 4096 {
+        return None;
+    }
+    let mut bits = Vec::new();
+    let mut at = 4;
+    for _ in 0..n {
+        let head = rest.get(at..at + 12)?;
+        let (stored, size) = (u32le(head, 0) as usize, u32le(head, 4) as usize);
+        let data = rest.get(at + 12..(at + 12).checked_add(stored)?)?;
+        if size == 0 {
+            return None;
+        }
+        // the decompressor enforces maxExpand / maxRatio per block; the strips together count as memory
+        let strip = crate::lzh::decompress(data, size).ok()?;
+        if n > 1 && !crate::limits::charge(strip.len()) {
+            return None;
+        }
+        bits.extend(strip);
+        at += 12 + stored;
+    }
+    Some((bits, n))
 }
 
 /// The DocuWorks form of a DIB: `bmi` + compressed bits block.
@@ -269,6 +309,38 @@ pub fn crop(img: &Image, x: u32, y: u32, w: u32, h: u32) -> Option<Image> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stored_dib_in_several_strips() {
+        // 2x2, 1 bpp, as a scanned page stores it: two strips of one row each
+        let mut bmi = vec![0u8; 40 + 8];
+        bmi[0] = 40;
+        bmi[4] = 2;
+        bmi[8] = 2;
+        bmi[12] = 1;
+        bmi[14] = 1;
+        bmi[44] = 255;
+        bmi[45] = 255;
+        bmi[46] = 255;
+        let rows: [[u8; 4]; 2] = [[0b1000_0000, 0, 0, 0], [0b0100_0000, 0, 0, 0]];
+        let mut d = bmi.clone();
+        d.extend(2u32.to_le_bytes());
+        for r in &rows {
+            let packed = crate::lzh::compress(r);
+            for v in [packed.len() as u32, 4, 1] {
+                d.extend(v.to_le_bytes());
+            }
+            d.extend(packed);
+        }
+        let joined: Vec<u8> = rows.concat();
+        // strips hold the rows top-first, as a top-down DIB would
+        let mut top_down = bmi.clone();
+        top_down[8..12].copy_from_slice(&(-2i32).to_le_bytes());
+        assert_eq!(decode_stored(&d).unwrap(), decode(&top_down, &joined).unwrap());
+        // the one-strip form still reads
+        let one = encode_stored(&bmi, &joined, 2);
+        assert_eq!(decode_stored(&one).unwrap(), decode(&bmi, &joined).unwrap());
+    }
 
     #[test]
     fn one_bit_bottom_up() {
