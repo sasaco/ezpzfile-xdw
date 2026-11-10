@@ -94,6 +94,13 @@ impl Fonts {
     /// the folders in `EZPZXDW_FONTS` (separated like PATH).
     pub fn system() -> Fonts {
         let mut f = Fonts::new();
+        f.add_system();
+        f
+    }
+
+    /// Adds what [`Fonts::system`] finds.
+    pub fn add_system(&mut self) {
+        let f = self;
         if let Some(v) = std::env::var_os("EZPZXDW_FONTS") {
             for d in std::env::split_paths(&v) {
                 if d.is_dir() {
@@ -125,7 +132,6 @@ impl Fonts {
                 }
             }
         }
-        f
     }
 
     /// Face names (normalized) for diagnostics.

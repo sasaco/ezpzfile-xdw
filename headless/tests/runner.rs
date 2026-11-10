@@ -153,3 +153,40 @@ fn a_bad_request_is_an_envelope_too() {
     assert_eq!(code, 2);
     assert_eq!(v["errors"][0]["code"], "IO_ERROR");
 }
+
+#[test]
+fn png_draws_the_pages_asked_for() {
+    let dir = work("png");
+    let input = sample(&dir, false);
+    let output = dir.join("output");
+    let (code, v) = run(&["png", "--input", input.to_str().unwrap(), "--output-dir", output.to_str().unwrap(), "--pages", "2,1", "--dpi", "50"]);
+    assert_eq!(code, 0, "{v}");
+    check_envelope(&v, true);
+    assert_eq!(check_artifacts(&v, &output), ["page-image", "page-image", "page-images"]);
+    assert_eq!(v["summary"]["imageCount"], 2);
+    assert_eq!(v["summary"]["dpi"], 50.0);
+    for name in ["page-0001.png", "page-0002.png"] {
+        assert_eq!(&std::fs::read(output.join(name)).unwrap()[..8], b"\x89PNG\r\n\x1a\n", "{name}");
+    }
+    let report: Value = serde_json::from_slice(&std::fs::read(output.join("pages.json")).unwrap()).unwrap();
+    assert_eq!(report["images"][0]["page"], 2); // in the order asked for
+    assert_eq!((report["images"][1]["widthPx"].as_u64(), report["images"][1]["heightPx"].as_u64()), (Some(414), Some(585)));
+    assert_eq!(report["images"][1]["textRuns"], 1);
+    // a PC with fonts draws the text; one without says so
+    let drawn = v["summary"]["textNotDrawn"].as_u64().unwrap();
+    let codes: Vec<&str> = v["messages"].as_array().unwrap().iter().map(|m| m["code"].as_str().unwrap()).collect();
+    assert_eq!(codes.contains(&"NO_FONTS"), drawn > 0, "{codes:?}");
+}
+
+#[test]
+fn png_refuses_pages_that_are_not_there_or_too_many() {
+    let dir = work("png-bad");
+    let input = sample(&dir, false);
+    let output = dir.join("output");
+    for pages in ["3", "0", "x"] {
+        let (code, v) = run(&["png", "--input", input.to_str().unwrap(), "--output-dir", output.to_str().unwrap(), "--pages", pages]);
+        assert_eq!(code, 2, "{pages}");
+        assert_eq!(v["errors"][0]["code"], "INVALID_ARGUMENT", "{pages}");
+    }
+    assert_eq!(std::fs::read_dir(&output).unwrap().count(), 0);
+}
