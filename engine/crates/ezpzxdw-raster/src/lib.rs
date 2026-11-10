@@ -1,7 +1,11 @@
 //! Draws a page's display list ([`ezpzxdw_core::gfx::Display`]) to pixels, so
 //! a page can be looked at without a browser: scanned pages, drawings, lines
-//! and pictures. Text runs are not drawn (no fonts here); read them with the
-//! text extraction instead. [`Raster::skipped_text`] says how many there were.
+//! pictures and text. Text is drawn only with fonts ([`render_with`] and
+//! [`Fonts`]; none are bundled); without them the runs are left out and
+//! counted in [`Raster::skipped_text`] (read them with the text extraction).
+
+mod fonts;
+pub use fonts::Fonts;
 
 use ezpzxdw_core::gfx::{Clip, Display, Image, ImageData, Item, Path as XPath, Seg};
 use tiny_skia::{
@@ -17,8 +21,10 @@ pub const MAX_PIXELS: u64 = 160_000_000;
 
 pub struct Raster {
     pub pixmap: Pixmap,
-    /// Text runs left out (not drawn).
+    /// Text runs left out (no fonts given).
     pub skipped_text: usize,
+    /// Characters no font had a glyph for (left blank).
+    pub missing_glyphs: usize,
     /// Pictures that could not be decoded.
     pub skipped_images: usize,
 }
@@ -31,6 +37,11 @@ impl Raster {
 
 /// Draws `d` at `dpi` on a white page.
 pub fn render(d: &Display, dpi: f32) -> Result<Raster, String> {
+    render_with(d, dpi, None)
+}
+
+/// Draws `d` at `dpi` on a white page, with text when `fonts` has any.
+pub fn render_with(d: &Display, dpi: f32, fonts: Option<&Fonts>) -> Result<Raster, String> {
     if !(dpi.is_finite() && dpi > 0.0) {
         return Err(format!("bad dpi {dpi}"));
     }
@@ -46,7 +57,7 @@ pub fn render(d: &Display, dpi: f32) -> Result<Raster, String> {
     let masks: Vec<Option<Mask>> = d.clips.iter().map(|c| clip_mask(c, pixmap.width(), pixmap.height(), page)).collect();
     let mask_of = |clip: u32| masks.get(clip as usize).and_then(|m| m.as_ref());
     let mut decoded: Vec<Option<Option<Pixmap>>> = vec![None; d.images.len()];
-    let (mut skipped_text, mut skipped_images) = (0, 0);
+    let (mut skipped_text, mut skipped_images, mut missing_glyphs) = (0, 0, 0);
 
     for item in &d.items {
         match item {
@@ -81,7 +92,13 @@ pub fn render(d: &Display, dpi: f32) -> Result<Raster, String> {
                 }
                 pixmap.stroke_path(&p, &solid(*color), &stroke, page, mask_of(*clip));
             }
-            Item::Text { .. } => skipped_text += 1,
+            Item::Text { .. } => match fonts.filter(|f| !f.is_empty()) {
+                Some(f) => missing_glyphs += draw_text(&mut pixmap, f, item, page, mask_of(match item {
+                    Item::Text { clip, .. } => *clip,
+                    _ => 0,
+                })),
+                None => skipped_text += 1,
+            },
             Item::Image { image, m, clip, alpha, mul } => {
                 let k = *image as usize;
                 let Some(slot) = decoded.get_mut(k) else { continue };
@@ -103,7 +120,74 @@ pub fn render(d: &Display, dpi: f32) -> Result<Raster, String> {
             }
         }
     }
-    Ok(Raster { pixmap, skipped_text, skipped_images })
+    Ok(Raster { pixmap, skipped_text, missing_glyphs, skipped_images })
+}
+
+/// Draws one text run; returns how many characters had no glyph.
+fn draw_text(pixmap: &mut Pixmap, fonts: &Fonts, item: &Item, page: Transform, mask: Option<&Mask>) -> usize {
+    let Item::Text { x, y, angle, size, sx, face, weight, italic, underline, strike, vertical, color, text, xs, .. } = item else {
+        return 0;
+    };
+    let cands = fonts.candidates(face);
+    let chars: Vec<char> = text.chars().collect();
+    let by_xs = xs.len() == chars.len();
+    let run = page.pre_translate(*x, *y).pre_rotate(-*angle);
+    let paint = solid(*color);
+    let (mut pen, mut missing, mut end) = (0.0f32, 0usize, 0.0f32);
+    for (i, &c) in chars.iter().enumerate() {
+        if c.is_control() {
+            continue;
+        }
+        let found = cands.iter().find_map(|&k| {
+            let face = fonts.face(k)?;
+            let g = fonts::glyph(&face, c)?;
+            Some((g, face.is_bold(), face.is_italic()))
+        });
+        let Some((g, is_bold, is_italic)) = found else {
+            missing += 1;
+            pen += size * 0.5;
+            continue;
+        };
+        let at = if by_xs { xs[i] } else { pen };
+        let adv = g.advance * size;
+        if let Some(p) = &g.path {
+            // em units (y up) → run space: scale by the size and flip y.
+            // Vertical runs stack downward, each glyph centred on the line.
+            let mut t = if *vertical { run.pre_translate(-adv * 0.5, at + size * 0.88) } else { run.pre_translate(at, 0.0) };
+            t = t.pre_scale(size * if *vertical { 1.0 } else { *sx }, -*size);
+            if *italic && !is_italic {
+                t = t.pre_concat(Transform::from_row(1.0, 0.0, 0.2, 1.0, 0.0, 0.0));
+            }
+            pixmap.fill_path(p, &paint, FillRule::Winding, t, mask);
+            if *weight >= 600 && !is_bold {
+                // synthetic bold: a thin stroke around the outline (em units)
+                let stroke = Stroke { width: 0.035, ..Stroke::default() };
+                pixmap.stroke_path(p, &paint, &stroke, t, mask);
+            }
+        }
+        pen += if *vertical { *size } else { adv * *sx };
+        if !*vertical {
+            end = end.max(at + adv * *sx);
+        }
+    }
+    if (*underline || *strike) && !*vertical && end > 0.0 {
+        let mut line = |dy: f32| {
+            let mut b = PathBuilder::new();
+            b.move_to(0.0, dy);
+            b.line_to(end, dy);
+            if let Some(p) = b.finish() {
+                let stroke = Stroke { width: (size * 0.06).max(1.0), ..Stroke::default() };
+                pixmap.stroke_path(&p, &paint, &stroke, run, mask);
+            }
+        };
+        if *underline {
+            line(size * 0.12);
+        }
+        if *strike {
+            line(-size * 0.3);
+        }
+    }
+    missing
 }
 
 fn solid(rgb: u32) -> Paint<'static> {
@@ -221,6 +305,30 @@ mod tests {
         assert_eq!(px(&r, 55, 50)[0], 0); // first picture pixel: black
         assert_eq!(px(&r, 95, 50)[0], 255); // second: white
         assert_eq!(r.skipped_text, 1);
+    }
+
+    #[test]
+    fn draws_text_when_a_font_is_there() {
+        let f = Fonts::system();
+        if f.is_empty() {
+            return; // no fonts on this machine
+        }
+        let mut d = page();
+        d.items.push(Item::Text {
+            x: 200.0, y: 1500.0, angle: 0.0, size: 1000.0, sx: 1.0, face: "MS Mincho".into(), weight: 400, italic: false,
+            underline: false, strike: false, vertical: false, color: 0, text: "HI".into(), xs: vec![], clip: 0,
+        });
+        let r = render_with(&d, 100.0, Some(&f)).unwrap();
+        assert_eq!((r.skipped_text, r.missing_glyphs), (0, 0));
+        let dark = (0..100).flat_map(|y| (0..100).map(move |x| (x, y))).filter(|&(x, y)| px(&r, x, y)[0] < 128).count();
+        assert!(dark > 50, "dark pixels: {dark}");
+        assert_eq!(px(&r, 5, 2), [255, 255, 255, 255]); // above the em box
+    }
+
+    #[test]
+    fn names_meet_across_width_and_language() {
+        assert_eq!(fonts::normalize("ＭＳ Ｐ明朝"), fonts::normalize("MS PMincho"));
+        assert_eq!(fonts::normalize("@ＭＳ ゴシック"), "msgothic");
     }
 
     #[test]

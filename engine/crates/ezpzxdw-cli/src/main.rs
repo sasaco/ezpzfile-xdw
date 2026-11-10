@@ -267,14 +267,19 @@ fn run(a: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             if !single {
                 std::fs::create_dir_all(target)?;
             }
+            // fonts of this PC (and EZPZXDW_FONTS); EZPZXDW_NO_TEXT=1 leaves text out
+            let fonts = if std::env::var_os("EZPZXDW_NO_TEXT").is_some() { ezpzxdw_raster::Fonts::new() } else { ezpzxdw_raster::Fonts::system() };
             for k in pages {
                 let disp = d.render(k)?;
-                let r = ezpzxdw_raster::render(&disp, dpi)?;
+                let r = ezpzxdw_raster::render_with(&disp, dpi, Some(&fonts))?;
                 let path = if single { std::path::PathBuf::from(target) } else { std::path::Path::new(target).join(format!("p{}.png", k + 1)) };
                 std::fs::write(&path, r.png()?)?;
                 let mut notes = Vec::new();
                 if r.skipped_text > 0 {
-                    notes.push(format!("{} text runs not drawn", r.skipped_text));
+                    notes.push(format!("{} text runs not drawn (no fonts)", r.skipped_text));
+                }
+                if r.missing_glyphs > 0 {
+                    notes.push(format!("{} characters without a glyph", r.missing_glyphs));
                 }
                 if r.skipped_images > 0 {
                     notes.push(format!("{} pictures not decoded", r.skipped_images));
