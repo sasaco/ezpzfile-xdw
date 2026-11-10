@@ -15,6 +15,10 @@ USAGE:
   ezpzxdw check  <file>            check values and properties round trip
   ezpzxdw pages  <file>            pages and the objects on them
   ezpzxdw render <file> [page]     what drawing a page produces (summary)
+  ezpzxdw png    <file> <pages> <out> [dpi]
+                                 draw pages to PNG (pages: 3, 3-5, 1,4 or all; default 150 dpi).
+                                 One page: <out> is the file. Several: <out> is a folder of p<N>.png.
+                                 Text runs are not drawn; read them with `text`.
   ezpzxdw text   <file> [--include-hidden]
                                  text of every page (text that a box or picture
                                  drawn later covers is left out unless asked for)
@@ -47,6 +51,28 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// "3", "3-5", "1,4,7-8" or "all" (1-based) → 0-based page indexes.
+fn page_list(spec: &str, n: usize) -> Result<Vec<usize>, Box<dyn std::error::Error>> {
+    if spec == "all" {
+        return Ok((0..n).collect());
+    }
+    let mut pages = Vec::new();
+    for part in spec.split(',') {
+        let (from, to) = match part.split_once('-') {
+            Some((a, b)) => (a.trim().parse::<usize>()?, b.trim().parse::<usize>()?),
+            None => {
+                let p = part.trim().parse::<usize>()?;
+                (p, p)
+            }
+        };
+        if from == 0 || to < from || to > n {
+            return Err(format!("no page {part} (the document has {n})").into());
+        }
+        pages.extend(from - 1..to);
+    }
+    Ok(pages)
 }
 
 fn show_value(v: &[u8]) -> String {
@@ -229,6 +255,34 @@ fn run(a: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 let hidden = if disp.hidden_chars > 0 { format!(" hidden {}", disp.hidden_chars) } else { String::new() };
                 writeln!(out, "page {}: {:?} clips {} images {} skipped {:?}{hidden}", k + 1, counts, disp.clips.len(), disp.images.len(), sk)?;
+            }
+        }
+        "png" => {
+            let d = ezpzxdw_core::doc::Document::open(b.clone())?;
+            let n = d.pages.len();
+            let pages = page_list(a.get(3).ok_or("pages")?, n)?;
+            let target = a.get(4).ok_or("missing out")?;
+            let dpi: f32 = a.get(5).map(|s| s.parse()).transpose()?.unwrap_or(150.0);
+            let single = pages.len() == 1 && !std::path::Path::new(target).is_dir();
+            if !single {
+                std::fs::create_dir_all(target)?;
+            }
+            for k in pages {
+                let disp = d.render(k)?;
+                let r = ezpzxdw_raster::render(&disp, dpi)?;
+                let path = if single { std::path::PathBuf::from(target) } else { std::path::Path::new(target).join(format!("p{}.png", k + 1)) };
+                std::fs::write(&path, r.png()?)?;
+                let mut notes = Vec::new();
+                if r.skipped_text > 0 {
+                    notes.push(format!("{} text runs not drawn", r.skipped_text));
+                }
+                if r.skipped_images > 0 {
+                    notes.push(format!("{} pictures not decoded", r.skipped_images));
+                }
+                if !disp.skipped.is_empty() {
+                    notes.push(format!("skipped {:?}", disp.skipped));
+                }
+                writeln!(out, "page {}: {} ({}x{}){}", k + 1, path.display(), r.pixmap.width(), r.pixmap.height(), if notes.is_empty() { String::new() } else { format!(" — {}", notes.join("; ")) })?;
             }
         }
         "images" => {

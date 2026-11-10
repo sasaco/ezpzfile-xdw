@@ -11,4 +11,5 @@ path = "src/main.rs"
 
 [dependencies]
 ezpzxdw-core = { path = "../ezpzxdw-core" }
+ezpzxdw-raster = { path = "../ezpzxdw-raster" }
 serde_json = "1"

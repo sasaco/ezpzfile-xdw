@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ezpzxdw-core", "crates/ezpzxdw-cli", "crates/ezpzxdw-wasm"]
+members = ["crates/ezpzxdw-core", "crates/ezpzxdw-cli", "crates/ezpzxdw-wasm", "crates/ezpzxdw-raster"]
 
 [workspace.package]
 version = "0.3.0"

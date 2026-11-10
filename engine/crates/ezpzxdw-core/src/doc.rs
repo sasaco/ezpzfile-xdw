@@ -434,6 +434,22 @@ impl Document {
                     out.skipped.push(format!("{}: bitmap not readable", o.kind_name));
                 }
             }
+            9 => {
+                // a scanned bi-level page: CCITT Group 4 (T.6) with no header; the
+                // pixel size is in fields 0x87 × 0x88 of the drawing (DocuWorks scans)
+                let img = c
+                    .px
+                    .filter(|&(pw, ph)| limits::image_size(pw as usize, ph as usize) && limits::charge(pw as usize * ph as usize * 4))
+                    .and_then(|(pw, ph)| crate::fax4::decode(&c.data, pw, ph));
+                match img {
+                    Some(img) => {
+                        out.images.push(img);
+                        let image = (out.images.len() - 1) as u32;
+                        out.items.push(Item::Image { image, m: [bw as f32, 0.0, 0.0, bh as f32, 0.0, 0.0], clip: 0, alpha: 1.0, mul: false });
+                    }
+                    None => out.skipped.push(format!("{}: scanned page (G4) not readable", o.kind_name)),
+                }
+            }
             k => out.skipped.push(format!("{}: drawing kind {k}", o.kind_name)),
         }
         // place: rotate within the box, then move to the object's position
@@ -461,12 +477,15 @@ impl Document {
 pub struct Content {
     pub kind: i64,
     pub data: Vec<u8>,
+    /// Pixel width × height (fields 0x87, 0x88) when the drawing states them,
+    /// as scanned pages (kind 9) do.
+    pub px: Option<(u32, u32)>,
 }
 
 impl Content {
     pub fn of_entry(b: &[u8], e: &Entry) -> Option<Content> {
         match &e.body {
-            Body::Fields { kind, .. } => Some(Content { kind: kind.unwrap_or(0) as i64, data: e.expanded(b).ok()? }),
+            Body::Fields { kind, .. } => Some(Content { kind: kind.unwrap_or(0) as i64, data: e.expanded(b).ok()?, px: None }),
             Body::Raw(..) => None,
         }
     }
@@ -479,7 +498,11 @@ impl Content {
             Some(n) => lzh::decompress(data, n).ok()?,
             None => data.to_vec(),
         };
-        Some(Content { kind, data })
+        let px = match (tlv::find_uint(&items, v, 0x87), tlv::find_uint(&items, v, 0x88)) {
+            (Some(w), Some(h)) if w > 0 && h > 0 && w <= u32::MAX as u64 && h <= u32::MAX as u64 => Some((w as u32, h as u32)),
+            _ => None,
+        };
+        Some(Content { kind, data, px })
     }
 }
 
