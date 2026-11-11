@@ -1,0 +1,7 @@
+/node_modules/
+/dist/
+/media/
+/build/
+/*.vsix
+/LICENSE
+/NOTICE

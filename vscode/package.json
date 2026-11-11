@@ -1,0 +1,77 @@
+{
+  "name": "xdw-editor",
+  "displayName": "XDW Editor",
+  "description": "DocuWorks の文書（.xdw）とバインダー（.xbd）を VS Code のタブで開き、見て、アノテーションを付け、保存します。EZPZ File XDW を使用。富士フイルムビジネスイノベーション株式会社とは関係ありません。",
+  "publisher": "sasaco",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sasaco/ezpzfile-xdw.git",
+    "directory": "vscode"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "xdwEditor.document",
+        "displayName": "XDW Editor",
+        "selector": [
+          {
+            "filenamePattern": "*.xdw"
+          },
+          {
+            "filenamePattern": "*.xbd"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "commands": [
+      {
+        "command": "xdwEditor.openInScreen",
+        "title": "XDW Editor で開く"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "xdwEditor.openInScreen",
+          "when": "resourceExtname =~ /^\\.(xdw|xbd)$/i",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "xdwEditor.openInScreen",
+          "when": "resourceExtname =~ /^\\.(xdw|xbd)$/i"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "node scripts/build.mjs",
+    "test": "vitest run",
+    "package": "node scripts/build.mjs --package"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "@types/vscode": "1.90.0",
+    "@vscode/vsce": "3.2.1",
+    "esbuild": "0.24.0",
+    "typescript": "5.6.3",
+    "vitest": "2.1.9"
+  }
+}

@@ -1,0 +1,52 @@
+# The VS Code extension of the editor (vscode/, structural-mcp Phase 14 stage X): a tag vscode-v<version of
+# vscode/package.json> builds the engine as WebAssembly and the extension, runs its tests, and publishes
+# xdw-editor-<version>.vsix with SHA256SUMS.txt as a GitHub release. Not listed on the Marketplace or Open VSX.
+name: vscode-release
+
+on:
+  push:
+    tags: ['vscode-v*']
+
+permissions:
+  contents: write
+
+env:
+  RUST_VERSION: '1.95.0'
+  WASM_BINDGEN_VERSION: '0.2.129'
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.15.0'
+      - name: Check the tag against the extension version
+        run: |
+          version=$(node -p "require('./vscode/package.json').version")
+          if [ "${GITHUB_REF_NAME}" != "vscode-v${version}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match vscode-v${version}" >&2
+            exit 1
+          fi
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+      - name: Rust and wasm-bindgen
+        run: |
+          rustup toolchain install "${RUST_VERSION}" --profile minimal --target wasm32-unknown-unknown
+          rustup default "${RUST_VERSION}"
+          cargo install wasm-bindgen-cli --version "${WASM_BINDGEN_VERSION}" --locked
+      - name: Extension
+        run: |
+          npm --prefix vscode ci
+          npm --prefix vscode run typecheck
+          npm --prefix vscode test
+          npm --prefix vscode run package
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd vscode
+          sha256sum "xdw-editor-${VERSION}.vsix" > SHA256SUMS.txt
+          gh release create "${GITHUB_REF_NAME}" "xdw-editor-${VERSION}.vsix" SHA256SUMS.txt \
+            --title "XDW Editor for VS Code ${VERSION}" \
+            --notes "vscode/ ${VERSION} (commit ${GITHUB_SHA}). The EZPZ File XDW editor as a VS Code custom editor for .xdw and .xbd. Install the .vsix by hand; it is not on the Marketplace or Open VSX. Not affiliated with FUJIFILM Business Innovation Corp."
