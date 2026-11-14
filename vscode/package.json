@@ -3,7 +3,7 @@
   "displayName": "XDW Editor",
   "description": "DocuWorks の文書（.xdw）とバインダー（.xbd）を VS Code のタブで開き、見て、アノテーションを付け、保存します。EZPZ File XDW を使用。富士フイルムビジネスイノベーション株式会社とは関係ありません。",
   "publisher": "sasaco",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "license": "MIT",
   "repository": {

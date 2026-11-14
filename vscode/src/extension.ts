@@ -43,9 +43,15 @@ class XdwEditorProvider implements vscode.CustomReadonlyEditorProvider {
     if (typeof message !== 'object' || message === null) return;
     const { type, name, bytes } = message as { type?: unknown; name?: unknown; bytes?: unknown };
     if (type === 'ready') {
-      const data = await vscode.workspace.fs.readFile(document.uri);
-      // A copy with a buffer of its own: what readFile returns can be a view into a larger one.
-      await webview.postMessage({ type: 'open', name: baseName(document.uri), bytes: new Uint8Array(data) });
+      try {
+        const data = await vscode.workspace.fs.readFile(document.uri);
+        // A copy with a buffer of its own: what readFile returns can be a view into a larger one.
+        await webview.postMessage({ type: 'open', name: baseName(document.uri), bytes: new Uint8Array(data) });
+      } catch (err) {
+        // The editor shows a spinner until the document arrives: it will not. The caller says why.
+        void webview.postMessage({ type: 'openFailed' });
+        throw err;
+      }
     } else if (type === 'save') {
       const data = toBytes(bytes);
       if (typeof name !== 'string' || data === null) throw new Error('保存するデータを受け取れませんでした。');
