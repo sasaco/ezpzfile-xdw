@@ -8,7 +8,7 @@ download = (bytes, name, type) => HOST.save(bytes, name, type);
 window.print = () => HOST.print();
 HOST.on("savePdf", () => { if (S.ed) savePdf(); });
 
-// The spinner (host.js) while the editor checks a file before it opens it: up to eight seconds for a long document.
+// The spinner (host.js) while the editor checks a file before it opens it (CHECK_MS in scripts/assemble.mjs).
 // After the check nothing waits any more (the engine opens the bytes and the pages are laid out before the screen is
 // drawn again), so the spinner goes when the document shows, or when the editor says why it could not open it.
 const checkFirstUpstream = checkFirst;
@@ -20,4 +20,41 @@ checkFirst = async (bytes) => {
 const openFileUpstream = openFile;
 openFile = async (file) => {
   try { await openFileUpstream(file); } finally { HOST.loading(null); }
+};
+
+// The editor draws a page when it comes within 600px of what shows (buildPages) and then keeps its canvas and its
+// text layer for good: a long document that is read through holds every page it showed (some 8 MB a page on a
+// screen at 150%). A second observer gives up the drawing of a page that is far from what shows, well outside those
+// 600px. Such a page says it is not drawn, so the editor's own observer draws it again when it comes back, and the
+// search draws it when it looks for text there.
+const PAGE_KEEP = "2400px 0px";
+let farPages = null;
+function dropFarPage(pg) {
+  if (!pg.far) return;
+  // It is being drawn (it was near a moment ago): look again when that is over.
+  if (pg.busy) { setTimeout(() => dropFarPage(pg), 500); return; }
+  // Nothing to give up: never drawn (the editor sizes a canvas in CSS when it draws it), or given up already.
+  // Most pages of a long document are like this when it opens, and touching each of them is what would be slow.
+  if (pg.canvas.width === 0 || pg.canvas.style.width === "") return;
+  // The text the person selected is in its text layer: keep it until the page next goes far.
+  const sel = getSelection();
+  if (sel && !sel.isCollapsed && sel.rangeCount > 0 && sel.getRangeAt(0).intersectsNode(pg.div)) return;
+  pg.canvas.width = pg.canvas.height = 0;
+  const layer = $(".textlayer", pg.div);
+  if (layer) layer.remove();
+  pg.drawn = false;
+}
+const buildPagesUpstream = buildPages;
+buildPages = () => {
+  buildPagesUpstream();
+  if (farPages) farPages.disconnect();
+  farPages = new IntersectionObserver((ents) => {
+    for (const e of ents) {
+      const pg = S.pages[+e.target.dataset.i];
+      if (!pg || pg.div !== e.target) continue;
+      pg.far = !e.isIntersecting;
+      dropFarPage(pg);
+    }
+  }, { root: $("#scroller"), rootMargin: PAGE_KEEP });
+  for (const pg of S.pages) farPages.observe(pg.div);
 };
