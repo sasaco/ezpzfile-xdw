@@ -51,6 +51,13 @@ describe('the editor script', () => {
     expect(app).toMatch(/^const S = \{/m);
   });
 
+  it('keeps the one change this fork makes to the upstream editor: thumbnails are drawn only near what shows', () => {
+    // Without it a binder of thousands of pages draws, and keeps, a canvas for every page (README.md).
+    expect(app).toContain('S.thumbObserver = new IntersectionObserver(');
+    expect(app).toContain('const i = S.thumbs.findIndex((t) => t.near && !t.done);');
+    expect(app).not.toMatch(/for \(let i = 0; i < S\.thumbs\.length; i\+\+\)/);
+  });
+
   it('still opens a File handed over by the host', () => {
     expect(app).toContain('HOST.on("open", (d) => { if (d.file instanceof File) openFile(d.file); });');
   });
