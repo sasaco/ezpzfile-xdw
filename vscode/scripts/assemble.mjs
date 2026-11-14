@@ -3,7 +3,8 @@
 //   - the module script is a file of its own (a webview's CSP then needs no inline script),
 //   - the .wasm is loaded from the URL in <meta name="ezpzxdw-wasm"> (the extension fills it in),
 //   - webview/host.js stands in for editor/host.js, and webview/tail.js follows app.js.
-//   - the editor's check of a file before it opens it draws pages for CHECK_MS, not for eight seconds.
+//   - the editor's check of a file before it opens it draws pages for CHECK_MS, not for eight seconds, and
+//     does not refuse the file for a page the engine cannot draw (CHECK_DRAW).
 // This changes no upstream file (the fork's one change to them is in web/editor/app.js: thumbnails are
 // drawn only near what shows; ../README.md). Pure functions on text, so tests run them without a build.
 
@@ -20,6 +21,15 @@ const SCRIPT = /<script type="module">\n([\s\S]*?)<\/script>/;
  */
 export const CHECK_MS = 1000;
 const UPSTREAM_CHECK = 'const CHECK_MS = 8000;';
+
+/**
+ * What the check does with a page it cannot draw. Upstream refuses the whole file for one such page. The engine
+ * refuses a page that is past its own limits by returning an error, and goes on working: the editor then says that
+ * the page cannot be shown and shows the others, so the check lets such a page pass. A trap is another matter (the
+ * Worker's engine is gone, as the editor's would be): the check fails for it as before.
+ */
+const UPSTREAM_DRAW = '{ doc.render(drawn); doc.forget(drawn); }';
+export const CHECK_DRAW = '{ try { doc.render(drawn); } catch (err) { if (err instanceof WebAssembly.RuntimeError) throw err; } doc.forget(drawn); }';
 
 /**
  * Text with the line endings git stores. A checkout on Windows with core.autocrlf has CRLF in every file, and what
@@ -45,7 +55,8 @@ export function editorScript({ editorHtml, glue, i18n, host, app, tail }) {
   const found = SCRIPT.exec(lf(editorHtml));
   if (!found) throw new Error('editor.html: no <script type="module">');
   const stripped = stripExports(glue);
-  const checked = replaceOnce(lf(app), UPSTREAM_CHECK, `const CHECK_MS = ${CHECK_MS};`, `app.js: ${UPSTREAM_CHECK}`);
+  let checked = replaceOnce(lf(app), UPSTREAM_CHECK, `const CHECK_MS = ${CHECK_MS};`, `app.js: ${UPSTREAM_CHECK}`);
+  checked = replaceOnce(checked, UPSTREAM_DRAW, CHECK_DRAW, `app.js: ${UPSTREAM_DRAW}`);
   let script = found[1];
   script = replaceOnce(script, '/*__EZPZXDW_GLUE__*/', stripped, 'editor.html: the glue placeholder');
   script = replaceOnce(script, '"/*__EZPZXDW_WASM_URL__*/"', 'document.querySelector(\'meta[name="ezpzxdw-wasm"]\').content', 'editor.html: the .wasm URL placeholder');

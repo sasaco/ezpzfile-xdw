@@ -23,20 +23,29 @@ class XdwEditorProvider implements vscode.CustomReadonlyEditorProvider {
     const media = vscode.Uri.joinPath(this.extensionUri, 'media');
     const webview = panel.webview;
     webview.options = { enableScripts: true, localResourceRoots: [media] };
+    let html = '';
     webview.onDidReceiveMessage(async (message: unknown) => {
       try {
+        // The engine in the webview stopped and the person asks for the document again: the same page, loaded anew
+        // (it then says it is ready, and the document is read and sent as the first time).
+        if (isReopen(message)) {
+          webview.html = '';
+          webview.html = html;
+          return;
+        }
         await this.handle(document, webview, message);
       } catch (err) {
         void vscode.window.showErrorMessage(`XDW Editor: ${err instanceof Error ? err.message : String(err)}`);
       }
     });
     const template = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(media, 'editor.html')));
-    webview.html = editorHtml(template, {
+    html = editorHtml(template, {
       cspSource: webview.cspSource,
       scriptUri: webview.asWebviewUri(vscode.Uri.joinPath(media, 'editor.js')).toString(),
       wasmUri: webview.asWebviewUri(vscode.Uri.joinPath(media, 'ezpzxdw_wasm_bg.wasm')).toString(),
       language: vscode.env.language,
     });
+    webview.html = html;
   }
 
   private async handle(document: vscode.CustomDocument, webview: vscode.Webview, message: unknown): Promise<void> {
@@ -70,6 +79,10 @@ class XdwEditorProvider implements vscode.CustomReadonlyEditorProvider {
       if (picked === savePdf) await webview.postMessage({ type: 'savePdf' });
     }
   }
+}
+
+function isReopen(message: unknown): boolean {
+  return typeof message === 'object' && message !== null && (message as { type?: unknown }).type === 'reopen';
 }
 
 function baseName(uri: vscode.Uri): string {

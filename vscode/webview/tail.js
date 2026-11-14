@@ -22,6 +22,30 @@ openFile = async (file) => {
   try { await openFileUpstream(file); } finally { HOST.loading(null); }
 };
 
+// The engine keeps what it worked out for a page until it is told to forget the page. The editor forgets a page after
+// it draws it, but not after it reads its text: a search walks through the pages reading their text, saving as text
+// reads all of them, and in a binder with scanned pages the engine had used up its 1 GiB after some fifty pages and
+// stopped for good. Reading the text of a page (or counting its hidden characters) now forgets the page.
+//
+// And when the engine does stop (a trap: out of memory, a bug), every call after that fails. The editor would go on
+// showing what it had, draw nothing more and save nothing, without a word; HOST says so and offers to open the
+// document again.
+for (const name of Object.getOwnPropertyNames(XdwDoc.prototype)) {
+  const call = Object.getOwnPropertyDescriptor(XdwDoc.prototype, name).value;
+  if (typeof call !== "function" || name === "constructor" || name === "free" || name === "forget" || name.startsWith("__")) continue;
+  const forgets = name === "text" || name === "hiddenChars";
+  XdwDoc.prototype[name] = function (...args) {
+    try {
+      const out = call.apply(this, args);
+      if (forgets) this.forget(args[0]);
+      return out;
+    } catch (e) {
+      if (e instanceof WebAssembly.RuntimeError) HOST.engineStopped();
+      throw e;
+    }
+  };
+}
+
 // The editor draws a page when it comes within 600px of what shows (buildPages) and then keeps its canvas and its
 // text layer for good: a long document that is read through holds every page it showed (some 8 MB a page on a
 // screen at 150%). A second observer gives up the drawing of a page that is far from what shows, well outside those

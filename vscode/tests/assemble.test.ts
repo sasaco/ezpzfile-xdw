@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error a plain module of the build
-import { CHECK_MS, editorPage, editorScript, handlerHashes, lf, stripExports } from '../scripts/assemble.mjs';
+import { CHECK_DRAW, CHECK_MS, editorPage, editorScript, handlerHashes, lf, stripExports } from '../scripts/assemble.mjs';
 
 const root = join(__dirname, '..');
 // With the line endings git stores: a checkout on Windows (core.autocrlf) has CRLF.
@@ -12,6 +12,8 @@ const read = (...parts: string[]): string => lf(readFileSync(join(root, ...parts
 const editorHtml = read('..', 'web', 'editor.html');
 const app = read('..', 'web', 'editor', 'app.js');
 const host = read('webview', 'host.js');
+// What the engine throws when it traps (the types of this project do not have WebAssembly as a value).
+const Trap = (globalThis as unknown as { WebAssembly: { RuntimeError: new (message: string) => Error } }).WebAssembly.RuntimeError;
 const GLUE = 'export class XdwDoc {}\nasync function __wbg_init() {}\nexport { __wbg_init as default };\n';
 const script: string = editorScript({ editorHtml, glue: GLUE, i18n: read('..', 'web', 'editor', 'i18n.js'), host, app, tail: read('webview', 'tail.js') });
 
@@ -90,6 +92,62 @@ describe('the editor script', () => {
     expect(script).not.toContain('const CHECK_MS = 8000;');
     const parts = { editorHtml, glue: GLUE, i18n: '', host, tail: '' };
     expect(() => editorScript({ ...parts, app: app.replace('const CHECK_MS = 8000;', 'const CHECK_MS = 9000;') })).toThrow('CHECK_MS');
+  });
+
+  it('lets the check pass a page the engine refuses, and still fail for a trap', () => {
+    expect(app).toContain('{ doc.render(drawn); doc.forget(drawn); }');
+    expect(script).toContain(`drawn++) ${CHECK_DRAW}\n`);
+    expect(script).not.toContain('{ doc.render(drawn); doc.forget(drawn); }');
+    // The patched loop as the Worker runs it: a refused page is passed over and forgotten, a trap ends the check.
+    const run = (render: (page: number) => void): number[] => {
+      const forgotten: number[] = [];
+      const doc = { render, forget: (page: number) => forgotten.push(page) };
+      new Function('doc', 'pages', `for (let drawn = 0; drawn < pages; drawn++) ${CHECK_DRAW}`)(doc, 4);
+      return forgotten;
+    };
+    expect(run((page) => { if (page === 1) throw new Error('too large or damaged: more than 5000000 points on one page'); })).toEqual([0, 1, 2, 3]);
+    expect(() => run((page) => { if (page === 2) throw new Trap('unreachable'); })).toThrow('unreachable');
+    const parts = { editorHtml, glue: GLUE, i18n: '', host, tail: '' };
+    expect(() => editorScript({ ...parts, app: app.replace('doc.forget(drawn); }', 'doc.forget(drawn) }') })).toThrow('doc.render(drawn)');
+  });
+
+  it('finds what the engine wrappers lean on: the search and saving as text read page texts and do not forget', () => {
+    expect(app).toContain('if (!pg.drawn && !fold(S.ed.text(i).replace(');
+    expect(app).toContain('const t = S.info.map((_, i) => S.ed.text(i)).join("\\n\\f\\n");');
+    expect(app).toContain('S.ed.hiddenChars(i)');
+    // The editor forgets a page itself after it draws one, by this name.
+    expect(app).toContain('S.ed.forget(i);');
+    expect(script).toContain('for (const name of Object.getOwnPropertyNames(XdwDoc.prototype)) {');
+    expect(script).toContain('const forgets = name === "text" || name === "hiddenChars";');
+    expect(script).toContain('if (e instanceof WebAssembly.RuntimeError) HOST.engineStopped();');
+    expect(host).toMatch(/^\s+engineStopped,$/m);
+  });
+
+  it('wraps the engine: reading a page text forgets the page, a trap is reported, the result is passed on', () => {
+    // tail.js against a stand-in for the engine class and the editor's names it touches.
+    const calls: string[] = [];
+    class XdwDoc {
+      text(page: number) { calls.push(`text ${page}`); if (page === 9) throw new Trap('unreachable'); if (page === 8) throw new Error('refused'); return `t${page}`; }
+      hiddenChars(page: number) { calls.push(`hidden ${page}`); return 3; }
+      render(page: number) { calls.push(`render ${page}`); return '{}'; }
+      forget(page: number) { calls.push(`forget ${page}`); }
+      free() { calls.push('free'); }
+    }
+    let stops = 0;
+    const HOST = { on() {}, save() {}, print() {}, loading() {}, engineStopped() { stops += 1; } };
+    const tail = read('webview', 'tail.js');
+    const names = 'let download, checkFirst = async () => {}, openFile = async () => {}, buildPages = () => {}; const S = { pages: [] }; const $ = () => null; const window = {};';
+    new Function('XdwDoc', 'HOST', `${names}\n${tail}`)(XdwDoc, HOST);
+    const doc = new XdwDoc();
+    expect(doc.text(2)).toBe('t2');
+    expect(doc.hiddenChars(2)).toBe(3);
+    expect(doc.render(5)).toBe('{}');
+    doc.free();
+    expect(calls).toEqual(['text 2', 'forget 2', 'hidden 2', 'forget 2', 'render 5', 'free']);
+    expect(() => doc.text(8)).toThrow('refused');
+    expect(stops).toBe(0);
+    expect(() => doc.text(9)).toThrow('unreachable');
+    expect(stops).toBe(1);
   });
 
   it('finds what dropping far pages leans on: how the editor draws a page and when', () => {

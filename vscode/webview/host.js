@@ -8,6 +8,7 @@
 //                       state {dirty, hasDocument, fileName}
 //                       save {name, mime, bytes} a file the editor would have downloaded
 //                       print                    the editor asked to print, which a webview cannot do
+//                       reopen                   the engine stopped and the person asks for the document again
 //   extension → editor  open {name, bytes}       the document of this tab
 //                       openFailed               the document could not be read (the extension says why)
 //                       savePdf                  save the document as a PDF (offered in place of printing)
@@ -21,6 +22,10 @@
 //   "read"   from the start: the extension reads the document and sends its bytes here
 //   "check"  the editor checks a file in a Worker before it opens it (tail.js)
 //   null     the document shows, or the editor or the extension says why it could not be opened
+//
+// And engineStopped(): the engine (WebAssembly) trapped, so nothing more can be drawn or saved in this webview
+// (tail.js notices). A notice stays on screen and offers to open the document again: the extension then loads
+// the webview anew, which loses what was not saved, as it is lost already.
 
 const HOST = (() => {
   const vscode = acquireVsCodeApi();
@@ -38,7 +43,9 @@ html.xdw-loading #xdw-loading { display: grid; }
 html.xdw-loading #ez-empty > * { visibility: hidden; }
 #xdw-loading .card { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-radius: 12px; background: var(--card, #fff); box-shadow: 0 4px 24px rgba(11, 16, 32, .14); color: var(--ink-700, #364059); font-size: 14px; }
 #xdw-loading .spin { width: 22px; height: 22px; box-sizing: border-box; border: 3px solid var(--ink-100, #e3e7ef); border-top-color: var(--brand-500, #0155ff); border-radius: 50%; animation: xdw-spin .8s linear infinite; }
-@keyframes xdw-spin { to { transform: rotate(360deg); } }`;
+@keyframes xdw-spin { to { transform: rotate(360deg); } }
+#xdw-stopped { position: fixed; top: 64px; left: 50%; transform: translateX(-50%); z-index: 70; display: flex; align-items: center; gap: 14px; max-width: min(720px, calc(100vw - 32px)); padding: 12px 16px; border-radius: 12px; background: var(--card, #fff); border: 1px solid var(--danger, #ef4444); box-shadow: 0 4px 24px rgba(11, 16, 32, .18); color: var(--ink-900, #131a2e); font-size: 13px; line-height: 1.5; }
+#xdw-stopped button { flex: none; padding: 7px 14px; border: 0; border-radius: 8px; background: var(--brand-500, #0155ff); color: #fff; font-weight: 600; font-size: 13px; cursor: pointer; }`;
   const spinner = document.createElement("div");
   spinner.id = "xdw-loading";
   spinner.setAttribute("role", "status");
@@ -58,6 +65,29 @@ html.xdw-loading #ez-empty > * { visibility: hidden; }
   }
   // A webview of this extension always has a document to show.
   loading("read");
+
+  const STOPPED = {
+    ja: ["画面のエンジンが止まりました。このタブでは、これ以上ページを描くことも保存することもできません。開き直してください（保存していない変更は失われます）。", "開き直す"],
+    en: ["The engine of this screen has stopped. This tab can draw no more pages and save nothing. Open the document again (changes that were not saved are lost).", "Open again"],
+  };
+  let stopped = false;
+  function engineStopped() {
+    if (stopped) return;
+    stopped = true;
+    loading(null);
+    const [text, again] = STOPPED[LANG] || STOPPED.ja;
+    const notice = document.createElement("div");
+    notice.id = "xdw-stopped";
+    notice.setAttribute("role", "alert");
+    const says = document.createElement("span");
+    says.textContent = text;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = again;
+    button.addEventListener("click", () => { button.disabled = true; vscode.postMessage({ type: "reopen" }); });
+    notice.append(says, button);
+    document.body.append(notice);
+  }
 
   window.addEventListener("message", (e) => {
     const d = e.data;
@@ -87,6 +117,7 @@ html.xdw-loading #ez-empty > * { visibility: hidden; }
     watchErrors() {},
     print() { vscode.postMessage({ type: "print" }); },
     loading,
+    engineStopped,
     /** A download of the editor (.xdw, .xbd, PDF, text): VS Code asks where to save it. */
     save(bytes, name, mime) { vscode.postMessage({ type: "save", name: String(name), mime: String(mime || ""), bytes: new Uint8Array(bytes) }); },
   };
