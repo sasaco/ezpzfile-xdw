@@ -278,6 +278,27 @@ mod tests {
     }
 
     #[test]
+    fn an_object_whose_drawing_is_of_an_unknown_kind_counts_as_not_drawn() {
+        let mut d = Document::blank(21000.0, 29700.0).unwrap();
+        let px = vec![255u8; 4 * 4 * 4];
+        d.add_picture(0, 1000.0, 1000.0, 3000.0, 3000.0, &px, 4, 4, false).unwrap();
+        let mut back = Document::open(d.save().unwrap()).unwrap();
+        let r = back.render(0).unwrap();
+        assert_eq!((r.objects_not_drawn, r.skipped.len()), (0, 0));
+        // the picture's drawing, made a kind the renderer does not know (the way DocuWorks' compressed pictures,
+        // kind 10, were before they could be read)
+        let o = back.pages[0].objects.iter().find(|o| o.kind_name == "picture").unwrap().record;
+        let mut v = crate::tlv::encode(0x80, &crate::tlv::uint_bytes(99));
+        v.extend(crate::tlv::encode(0x86, b"?"));
+        let a = back.records[o].get_mut(7).unwrap();
+        a.class = 0x80;
+        a.value = v;
+        let r = back.render(0).unwrap();
+        assert_eq!(r.objects_not_drawn, 1);
+        assert_eq!(r.skipped, vec!["picture: drawing kind 99".to_string()]);
+    }
+
+    #[test]
     fn a_picture_page_keeps_its_text_under_the_picture() {
         let mut d = Document::blank(21000.0, 29700.0).unwrap();
         let jpeg = include_bytes!("../tests/data/tiny.jpg");

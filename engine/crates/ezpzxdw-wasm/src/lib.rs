@@ -59,7 +59,9 @@ fn path_json(p: &Path, out: &mut String) {
 
 fn display_json(d: &Display) -> String {
     let mut o = String::with_capacity(d.items.len() * 64);
-    let _ = write!(o, "{{\"w\":{},\"h\":{},\"hidden\":{},\"clips\":[", n(d.w), n(d.h), d.hidden_chars);
+    // notDrawn: how many objects of the page (its own drawing, annotations) the engine left out whole (a drawing of a
+    // kind it does not know, one it cannot read); the page shows without them.
+    let _ = write!(o, "{{\"w\":{},\"h\":{},\"hidden\":{},\"notDrawn\":{},\"clips\":[", n(d.w), n(d.h), d.hidden_chars, d.objects_not_drawn);
     for (k, c) in d.clips.iter().enumerate() {
         if k > 0 {
             o.push(',');

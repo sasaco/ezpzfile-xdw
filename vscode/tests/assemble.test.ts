@@ -136,7 +136,7 @@ describe('the editor script', () => {
     let stops = 0;
     const HOST = { on() {}, save() {}, print() {}, loading() {}, engineStopped() { stops += 1; } };
     const tail = read('webview', 'tail.js');
-    const names = 'let download, checkFirst = async () => {}, openFile = async () => {}, buildPages = () => {}; const S = { pages: [] }; const $ = () => null; const window = {};';
+    const names = 'let download, checkFirst = async () => {}, openFile = async () => {}, buildPages = () => {}, renderTo = async () => ({}); const S = { pages: [] }; const $ = () => null; const window = {};';
     new Function('XdwDoc', 'HOST', `${names}\n${tail}`)(XdwDoc, HOST);
     const doc = new XdwDoc();
     expect(doc.text(2)).toBe('t2');
@@ -163,6 +163,47 @@ describe('the editor script', () => {
     expect(script).toContain('\nbuildPages = () => {\n');
     const keep = /const PAGE_KEEP = "(\d+)px 0px";/.exec(script);
     expect(Number(keep?.[1])).toBeGreaterThan(600);
+  });
+
+  it('finds what the notice of objects not drawn leans on: how the editor draws a page', () => {
+    expect(app).toContain('async function renderTo(i, canvas, k) {');
+    expect(app).toMatch(/async function renderTo\(i, canvas, k\) \{\n\s*const d = JSON\.parse\(S\.ed\.render\(i\)\);[\s\S]*?\n\s*return d;\n\}/);
+    expect(app).toContain('const d = await renderTo(i, pg.canvas, sc());');
+    expect(app).toMatch(/^function toast\(msg, ms = \d+\) \{/m);
+    expect(script).toContain('\nrenderTo = async (i, canvas, k) => {\n');
+  });
+
+  it('says once a page, for the pages drawn together, how many objects the engine left out', async () => {
+    const toasts: string[] = [];
+    const timers: (() => void)[] = [];
+    const drawings: Record<number, { notDrawn?: number }> = { 0: { notDrawn: 2 }, 1: { notDrawn: 0 }, 2: { notDrawn: 1 }, 3: {} };
+    const pages = [0, 1, 2, 3].map(() => ({ canvas: {} }));
+    const thumb = {};
+    const tail = read('webview', 'tail.js');
+    const names = 'let download, checkFirst = async () => {}, openFile = async () => {}, buildPages = () => {}; const $ = () => null; const window = {}; class XdwDoc {}; const HOST = { on() {}, loading() {} };';
+    // tail.js with stand-ins for the editor's names it touches; the wrapped functions are reached after it ran.
+    const run = new Function('S', 'upstream', 'toast', 'setTimeout', 'LANG', `let renderTo = upstream;\n${names}\n${tail}\nreturn { draw: (...a) => renderTo(...a), open: (f) => openFile(f) };`);
+    const ui = run({ pages }, async (i: number) => drawings[i], (m: string) => toasts.push(m), (fn: () => void) => { timers.push(fn); return 1; }, 'ja');
+    await ui.draw(0, pages[0].canvas, 1);
+    await ui.draw(1, pages[1].canvas, 1);
+    await ui.draw(2, pages[2].canvas, 1);
+    await ui.draw(3, pages[3].canvas, 1);
+    // a thumbnail of a page with objects left out says nothing
+    await ui.draw(2, thumb, 0.1);
+    expect(timers.length).toBe(1);
+    timers.shift()?.();
+    expect(toasts).toEqual(['1・3 ページに、この画面では表示できないもの（3 か所）があります。図や画像が欠けているところは DocuWorks で見てください。']);
+    // drawn again (it went far and came back): nothing more
+    await ui.draw(0, pages[0].canvas, 1);
+    expect(timers.length).toBe(0);
+    // another document: said again
+    await ui.open({});
+    await ui.draw(0, pages[0].canvas, 1);
+    timers.shift()?.();
+    expect(toasts.at(-1)).toBe('1 ページに、この画面では表示できないもの（2 か所）があります。図や画像が欠けているところは DocuWorks で見てください。');
+    const en = run({ pages }, async (i: number) => drawings[i], (m: string) => toasts.push(m), (fn: () => void) => { fn(); return 1; }, 'en');
+    await en.draw(2, pages[2].canvas, 1);
+    expect(toasts.at(-1)).toBe('Page 3 has 1 item(s) this screen cannot show. Where a figure or picture is missing, see the document in DocuWorks.');
   });
 
   it('still opens a File handed over by the host', () => {

@@ -387,6 +387,7 @@ impl Document {
     pub fn render_object(&self, o: &Object, out: &mut Display) {
         let Some(dr) = self.drawing(o.record) else {
             out.skipped.push(format!("{} without drawing", o.kind_name));
+            out.objects_not_drawn += 1;
             return;
         };
         let body = match &dr {
@@ -398,6 +399,7 @@ impl Document {
         };
         let Some(c) = body else {
             out.skipped.push(format!("{}: drawing not readable", o.kind_name));
+            out.objects_not_drawn += 1;
             return;
         };
         let pics = self.pictures(o.record);
@@ -413,7 +415,10 @@ impl Document {
                 let image = (out.images.len() - 1) as u32;
                 out.items.push(Item::Image { image, m: [bw as f32, 0.0, 0.0, bh as f32, 0.0, 0.0], clip: 0, alpha: 1.0, mul: false });
             }
-            None => out.skipped.push(format!("{}: {what} not readable", o.kind_name)),
+            None => {
+                out.skipped.push(format!("{}: {what} not readable", o.kind_name));
+                out.objects_not_drawn += 1;
+            }
         };
         match c.kind {
             4 | 1 if crate::wmf::is_wmf(&c.data) => {
@@ -440,7 +445,10 @@ impl Document {
                     .and_then(|(pw, ph)| crate::fax4::decode(&c.data, pw, ph));
                 fill_box(out, img, "scanned page (G4)");
             }
-            k => out.skipped.push(format!("{}: drawing kind {k}", o.kind_name)),
+            k => {
+                out.skipped.push(format!("{}: drawing kind {k}", o.kind_name));
+                out.objects_not_drawn += 1;
+            }
         }
         // place: rotate within the box, then move to the object's position
         let m: [f64; 6] = match rot {

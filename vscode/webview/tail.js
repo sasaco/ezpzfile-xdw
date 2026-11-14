@@ -19,7 +19,37 @@ checkFirst = async (bytes) => {
 // However opening ends, also before it comes to the check, the spinner of the first load goes.
 const openFileUpstream = openFile;
 openFile = async (file) => {
+  notDrawn.said.clear();
   try { await openFileUpstream(file); } finally { HOST.loading(null); }
+};
+
+// The engine leaves out, whole, an object of a page it cannot draw (a picture annotation whose drawing is of a kind
+// it does not know, say), and the page shows without it: the editor says nothing, and a figure is simply not there.
+// The page's drawing tells how many objects were left out (notDrawn); the first time a page of the document is drawn
+// on the screen with some, say so. Pages drawn together (the ones near what shows) go in one message. Thumbnails and
+// printing draw through the same function and say nothing.
+const NOT_DRAWN = {
+  ja: (pages, n) => `${pages.join("・")} ページに、この画面では表示できないもの（${n} か所）があります。図や画像が欠けているところは DocuWorks で見てください。`,
+  en: (pages, n) => `${pages.length > 1 ? "Pages" : "Page"} ${pages.join(", ")} ${pages.length > 1 ? "have" : "has"} ${n} item(s) this screen cannot show. Where a figure or picture is missing, see the document in DocuWorks.`,
+};
+const notDrawn = { said: new Set(), pending: new Map(), timer: 0 };
+function sayNotDrawn() {
+  notDrawn.timer = 0;
+  const pages = [...notDrawn.pending.keys()].sort((a, b) => a - b);
+  const n = [...notDrawn.pending.values()].reduce((a, b) => a + b, 0);
+  notDrawn.pending.clear();
+  if (pages.length) toast((NOT_DRAWN[LANG] || NOT_DRAWN.ja)(pages.map((i) => i + 1), n), 10000);
+}
+const renderToUpstream = renderTo;
+renderTo = async (i, canvas, k) => {
+  const d = await renderToUpstream(i, canvas, k);
+  const pg = S.pages[i];
+  if (d && d.notDrawn > 0 && pg && pg.canvas === canvas && !notDrawn.said.has(i)) {
+    notDrawn.said.add(i);
+    notDrawn.pending.set(i, d.notDrawn);
+    if (!notDrawn.timer) notDrawn.timer = setTimeout(sayNotDrawn, 300);
+  }
+  return d;
 };
 
 // The engine keeps what it worked out for a page until it is told to forget the page. The editor forgets a page after

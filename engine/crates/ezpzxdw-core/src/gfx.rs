@@ -139,6 +139,11 @@ pub struct Display {
     pub images: Vec<Image>,
     /// Things the renderer could not draw (record names), for diagnostics.
     pub skipped: Vec<String>,
+    /// How many of the page's objects (its own drawing, annotations) were
+    /// left out whole: no drawing, one that cannot be read, or of a kind the
+    /// renderer does not know. Unlike `skipped`, records inside a drawing
+    /// that draw nothing (DocuWorks' own comments, say) do not count.
+    pub objects_not_drawn: usize,
     /// Characters left out because something drawn later covers them
     /// completely (see `hidden`).
     pub hidden_chars: usize,
