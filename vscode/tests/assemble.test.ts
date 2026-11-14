@@ -58,6 +58,19 @@ describe('the editor script', () => {
     expect(app).not.toMatch(/for \(let i = 0; i < S\.thumbs\.length; i\+\+\)/);
   });
 
+  it('finds what the spinner leans on: the check before a file opens, with nothing to wait for after it', () => {
+    expect(app).toContain('async function checkFirst(bytes) {');
+    expect(app).toContain('async function openFile(file) {');
+    // Between the check and the document on screen the editor does not wait: the spinner goes with the check.
+    expect(app).toMatch(/await checkFirst\(buf\);\n\s*const ed = new XdwDoc\(buf\);\n\s*useDoc\(ed, /);
+    expect(script).toContain('\ncheckFirst = async (bytes) => {\n');
+    expect(script).toContain('\nopenFile = async (file) => {\n');
+    expect(host).toMatch(/^\s+loading,$/m);
+    // What the spinner hides while it turns, and the language of its text.
+    expect(editorHtml).toContain('<div id="ez-empty">');
+    expect(read('..', 'web', 'editor', 'i18n.js')).toMatch(/^const LANG = /m);
+  });
+
   it('still opens a File handed over by the host', () => {
     expect(app).toContain('HOST.on("open", (d) => { if (d.file instanceof File) openFile(d.file); });');
   });

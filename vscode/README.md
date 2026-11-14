@@ -10,6 +10,7 @@ Marketplace・Open VSX には載せていません。この repo の release の
 
 - `.xdw` と `.xbd` を既定でこの画面に開く（Custom Editor `xdwEditor.document`、Explorer の右クリック「XDW Editor で開く」、コマンド `xdwEditor.openInScreen`、ターミナルからは `code <ファイル>`）。
 - 上流のエディタを載せる（変えたのはサムネイルの描き方の 1 か所だけ。下の「作り」）。できることは上流と同じ：ページをめくる、文字の選択・コピー・検索、アノテーション、ページの操作、`.xdw`／`.xbd` の保存、PDF・テキストの書き出し。エンジンは webview の中の WebAssembly で、ファイルは外に送られない。
+- **読み込み中の表示**：文書が画面に出るまで、まん中にクルクル回る印と 1 行の説明を出す。拡張がファイルを読んで webview に送っている間は「ファイルを読み込んでいます…」、エディタが開く前にファイルを確かめている間（長い文書で 8 秒ほど）は「文書を確かめています…」。上流のエディタだけだと、その間はファイルを置くよう勧める空の画面のままで、何も動かない（大きいバインダーで 10 秒から 1 分ほど）。文書が出たとき、開けなかったときに消える。
 - **保存**：上流のエディタはファイルをブラウザのダウンロードとして保存する。この拡張では、そのバイトを VS Code の保存の画面に渡す。開いている文書のフォルダと、エディタが付けた名前を勧める。元と同じ名前を選ぶと上書きで、VS Code が確かめる。名前を選ぶまで何も書かない。
 - **印刷**：VS Code の webview は `window.print()` を無視するので、印刷はできない。エディタの印刷を押すと、その旨を知らせて「PDF で保存」を勧める（保存した PDF を印刷する）。
 - 画面の言葉は VS Code の表示言語に合わせる（日本語なら日本語、ほかは英語）。
@@ -22,9 +23,9 @@ Marketplace・Open VSX には載せていません。この repo の release の
 | | |
 |---|---|
 | `scripts/assemble.mjs` | 上流の `web/editor.html`・`editor/i18n.js`・`editor/app.js` と wasm-bindgen の glue を、webview 用に組み立てる（上流の `web/build.sh` と同じ組み立て）。スクリプトは別ファイルにし、`.wasm` は URL から読む |
-| `webview/host.js` | 上流の `editor/host.js` の代わりに入れる `HOST`。上流のものはエディタを枠に入れた Web ページ（ezpzfile.com）と話すが、webview では上の枠が VS Code 自身なので、それをそのページと見誤る。同じ形で、文書の受け取りと保存を拡張とやりとりする |
-| `webview/tail.js` | `app.js` の後ろに足す数行。エディタの `download` を拡張に渡すものに差し替え、`window.print` を上の案内に差し替える |
-| `src/extension.ts` | Custom Editor。文書のバイトを webview に渡し、保存を受けて保存の画面を出す |
+| `webview/host.js` | 上流の `editor/host.js` の代わりに入れる `HOST`。上流のものはエディタを枠に入れた Web ページ（ezpzfile.com）と話すが、webview では上の枠が VS Code 自身なので、それをそのページと見誤る。同じ形で、文書の受け取りと保存を拡張とやりとりする。読み込み中の表示（`HOST.loading`）もここにあり、開いたときから出す |
+| `webview/tail.js` | `app.js` の後ろに足す数行。エディタの `download` を拡張に渡すものに差し替え、`window.print` を上の案内に差し替える。エディタがファイルを確かめる `checkFirst` と開く `openFile` を包んで、読み込み中の表示を切り替え、消す |
+| `src/extension.ts` | Custom Editor。文書のバイトを webview に渡し、保存を受けて保存の画面を出す。文書を読めなかったら webview に知らせる（読み込み中の表示が残らないように） |
 | `src/html.ts`・`src/save.ts` | webview の CSP とページ、保存の名前と種類 |
 
 上流のファイルで変えたのは 1 か所だけです。`web/editor/app.js` のサムネイル（左のページの一覧）を、一覧の見えているあたりに来たときに描き、離れたら描いたものを捨てるようにしました。上流は文書を開いた直後に全ページ分を描いて持ち続けるので、数千ページのバインダーでは描き終わるまで何分もかかり、ブラウザのメモリを GB の単位で使います（一覧が隠れている幅の狭いタブでも同じ）。上流を取り込んでこの変更が消えたとき、また上流が `HOST` の形や `download` を変えたときは、`tests/assemble.test.ts` が落ちます。
