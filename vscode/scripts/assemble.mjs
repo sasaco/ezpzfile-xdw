@@ -3,7 +3,8 @@
 //   - the module script is a file of its own (a webview's CSP then needs no inline script),
 //   - the .wasm is loaded from the URL in <meta name="ezpzxdw-wasm"> (the extension fills it in),
 //   - webview/host.js stands in for editor/host.js, and webview/tail.js follows app.js.
-// No upstream file is changed. Pure functions on text, so tests run them without a build.
+// This changes no upstream file (the fork's one change to them is in web/editor/app.js: thumbnails are
+// drawn only near what shows; ../README.md). Pure functions on text, so tests run them without a build.
 
 import { createHash } from 'node:crypto';
 

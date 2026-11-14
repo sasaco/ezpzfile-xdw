@@ -54,6 +54,7 @@ const S = {
   cur: 0,
   observer: null,
   thumbs: [],
+  thumbObserver: null,
   binder: null,      // {name, docs:[{name, first_page, pages}]} for a .xbd
   ext: ".xdw",
   sticky: store.get("sticky2", "#ffff64"),
@@ -389,14 +390,42 @@ async function drawPage(i, force = false) {
   if (S.sel && S.sel.p === i) showSel();
 }
 
+const THUMB_W = 160;
+
+/** The place of a thumbnail in the list while it has no drawing (renderTo gives the drawing the same size). */
+function sizeThumb(c, p) {
+  c.style.width = THUMB_W + "px";
+  c.style.height = Math.round(THUMB_W * p.h / p.w) + "px";
+}
+
+/** Give up the drawing of a thumbnail (and its memory); its place in the list stays. */
+function dropThumb(t) {
+  t.c.width = t.c.height = 0;
+  t.done = false;
+}
+
 function buildThumbs() {
   const list = $("#pagelist");
   list.replaceChildren();
   S.binder = JSON.parse(S.ed.binder());
   const starts = new Map((S.binder ? S.binder.docs : []).map((d, k) => [d.first_page, k]));
+  // A thumbnail is drawn when it comes near the part of the list that shows and dropped when it
+  // leaves: a binder of thousands of pages would otherwise draw, and keep, a canvas for every page
+  // (minutes of drawing and gigabytes of memory), also while the list is not shown at all.
+  if (S.thumbObserver) S.thumbObserver.disconnect();
+  S.thumbObserver = new IntersectionObserver((ents) => {
+    for (const e of ents) {
+      const t = S.thumbs[+e.target.dataset.i];
+      if (!t) continue;
+      t.near = e.isIntersecting;
+      if (!t.near) dropThumb(t);
+    }
+    drawThumbs();
+  }, { root: list, rootMargin: "100% 0px" });
   S.thumbs = S.info.map((p, i) => {
     if (starts.has(i)) list.append(docHeader(starts.get(i)));
     const c = el("canvas");
+    sizeThumb(c, p);
     const li = el("li", { "data-i": i, draggable: "true" },
       el("span", { class: "thumb" }, c),
       el("span", { class: "tools" },
@@ -414,12 +443,13 @@ function buildThumbs() {
       if (Number.isFinite(from) && e.dataTransfer.types.includes("text/x-page")) { e.preventDefault(); e.stopPropagation(); movePage(from, i); }
     });
     list.append(li);
-    return { c, done: false };
+    S.thumbObserver.observe(li);
+    return { c, near: false, done: false };
   });
   $("#pagecount").textContent = S.binder ? tr("{0} 文書 · {1} ページ", S.binder.docs.length, S.info.length) : tr("{0} ページ", S.info.length);
   $("#binder-add").hidden = !S.binder;
   $("#menu-binder").hidden = !S.binder;
-  drawThumbs();
+  markCurrent();
 }
 
 function docHeader(k) {
@@ -438,16 +468,21 @@ function docHeader(k) {
   return li;
 }
 
+/** Draw the thumbnails that are near and have no drawing (yet, or any more after an edit), one at a time. */
 async function drawThumbs() {
-  for (let i = 0; i < S.thumbs.length; i++) {
+  if (drawThumbs.busy) return;
+  drawThumbs.busy = true;
+  for (;;) {
+    const i = S.thumbs.findIndex((t) => t.near && !t.done);
+    if (i < 0) break;
     const t = S.thumbs[i];
-    if (t.done) continue;
     t.done = true;
-    const w = 160;
-    try { await renderTo(i, t.c, w / S.info[i].w); S.ed.forget(i); } catch {}
+    try { await renderTo(i, t.c, THUMB_W / S.info[i].w); S.ed.forget(i); } catch {}
+    // it left while it was being drawn
+    if (!t.near) dropThumb(t);
     await new Promise((r) => setTimeout(r, 0));
   }
-  markCurrent();
+  drawThumbs.busy = false;
 }
 
 function markCurrent() {
@@ -494,7 +529,7 @@ function refresh(pagesChanged) {
       sizePage(pg.div, S.info[i]);
       pg.drawn = false;
       drawPage(i, true);
-      if (S.thumbs[i]) { S.thumbs[i].done = false; }
+      if (S.thumbs[i]) { sizeThumb(S.thumbs[i].c, S.info[i]); S.thumbs[i].done = false; }
     }
     drawThumbs();
   }
