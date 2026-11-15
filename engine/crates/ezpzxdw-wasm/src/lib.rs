@@ -3,7 +3,7 @@
 
 use ezpzxdw_core::doc::Document;
 use ezpzxdw_core::edit::Shape;
-use ezpzxdw_core::gfx::{Display, ImageData, Item, Path, Seg};
+use ezpzxdw_core::gfx::{Display, Image, ImageData, Item, Path, Seg};
 use ezpzxdw_core::props::Record;
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -132,6 +132,27 @@ fn display_json(d: &Display) -> String {
     o
 }
 
+/// Hand the page's JPEG pictures (picture pages, BI_JPEG bitmaps, JPEGs in
+/// EMF) to the screen as RGBA decoded as DocuWorks draws them
+/// (`ezpzxdw_core::jpeg`): a browser's decoder differs by a few levels. The
+/// decoded pixels count against the document's limits; a picture that cannot
+/// be decoded, or would go past them, stays a JPEG for the browser to decode.
+fn decode_jpegs(d: &mut Display, limits: &ezpzxdw_core::limits::Limits) {
+    if !d.images.iter().any(|im| matches!(im.data, ImageData::Jpeg(_))) {
+        return;
+    }
+    let _ = ezpzxdw_core::limits::scope(limits, || {
+        for im in &mut d.images {
+            if let ImageData::Jpeg(b) = &im.data {
+                if let Some((w, h, px)) = ezpzxdw_core::jpeg::rgba(b) {
+                    *im = Image { w, h, data: ImageData::Rgba(px) };
+                }
+            }
+        }
+        Ok(())
+    });
+}
+
 #[wasm_bindgen]
 pub struct XdwDoc {
     doc: Document,
@@ -172,11 +193,17 @@ impl XdwDoc {
     /// Characters left out of page `page` because they are covered (draws the page).
     #[wasm_bindgen(js_name = hiddenChars)]
     pub fn hidden_chars(&mut self, page: usize) -> Result<usize, JsError> {
-        if !self.cache.contains_key(&page) {
-            let d = self.doc.render(page).map_err(err)?;
-            self.cache.insert(page, d);
-        }
-        Ok(self.cache[&page].hidden_chars)
+        Ok(self.drawn(page)?.hidden_chars)
+    }
+
+    /// Page `page`'s drawing, drawn once and kept until `forget` or an edit.
+    /// Its JPEG pictures stay JPEG bytes here: `text` and `hiddenChars` run over
+    /// every page without `forget`, and need no pixels.
+    fn drawn(&mut self, page: usize) -> Result<&mut Display, JsError> {
+        Ok(match self.cache.entry(page) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(v) => v.insert(self.doc.render(page).map_err(err)?),
+        })
     }
 
     /// A new document: one blank page `w` × `h` (1/100 mm; A4 portrait is
@@ -221,11 +248,10 @@ impl XdwDoc {
 
     /// What page `n` looks like (JSON display list; pictures via `image`).
     pub fn render(&mut self, page: usize) -> Result<String, JsError> {
-        if !self.cache.contains_key(&page) {
-            let d = self.doc.render(page).map_err(err)?;
-            self.cache.insert(page, d);
-        }
-        Ok(display_json(&self.cache[&page]))
+        let limits = self.doc.limits;
+        let d = self.drawn(page)?;
+        decode_jpegs(d, &limits);
+        Ok(display_json(d))
     }
 
     /// Picture `idx` of page `n` as JPEG bytes or RGBA pixels (see `render`).
@@ -246,11 +272,7 @@ impl XdwDoc {
     }
 
     pub fn text(&mut self, page: usize) -> Result<String, JsError> {
-        if !self.cache.contains_key(&page) {
-            let d = self.doc.render(page).map_err(err)?;
-            self.cache.insert(page, d);
-        }
-        Ok(self.cache[&page].text())
+        Ok(self.drawn(page)?.text())
     }
 
     fn before(&mut self) {

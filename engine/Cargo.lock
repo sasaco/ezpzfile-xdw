@@ -106,7 +106,6 @@ name = "ezpzxdw-raster"
 version = "0.3.0"
 dependencies = [
  "ezpzxdw-core",
- "ezpzxdw-jpeg",
  "tiny-skia",
  "ttf-parser",
 ]
