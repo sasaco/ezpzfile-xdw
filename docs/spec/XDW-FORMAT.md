@@ -95,7 +95,7 @@ When the body starts with `0x80` it is a list of fields:
 
 | field | meaning |
 |---|---|
-| 0x80 | kind: **4** EMF drawing, **1** WMF drawing, **7** stored DIB (thumbnails, picture annotations, bitmap pages; 5.3), **5** JPEG page, **9** Group 4 page (5.4), **10** compressed picture annotation (not read yet), **11** high-compression image page (5.4) |
+| 0x80 | kind: **4** EMF drawing, **1** WMF drawing, **7** stored DIB (thumbnails, picture annotations, bitmap pages; 5.3), **5** JPEG page, **9** Group 4 page (5.4), **10** large picture annotation, predicted runs (5.6), **11** high-compression image page (5.4) |
 | 0x81 | size of the data once expanded (kind 7: something else) |
 | 0x83 | 8 in WMF entries |
 | 0x84, 0x85 | width, height (1/100 mm) |
@@ -447,6 +447,47 @@ drawing. Under Wine that drawing comes out empty for DocuWorks' own pasted
 metafiles as well as ours (Wine's OLE does not draw static metafiles), so this
 step is checked only as far as Wine goes. Double-clicking the object tries to
 start an OLE server: Viewer says it cannot, as for any pasted picture.
+
+### 5.6 Large pictures (kind 10)
+
+DocuWorks stores a picture annotation of many pixels as kind 10 [DocuWorks 9
+API, `XDW_AddAnnotation` from BMP files: 640 × 480 gives kind 7, 800 × 600 and
+larger kind 10, at 96 and at 300 dpi; a long thin 2000 × 100 stays kind 7;
+customer documents hold it for drawings pasted from CAD and spreadsheets].
+0x87 / 0x88 are the size in pixels; there is no 0x81. The data is a 40-byte
+BITMAPINFOHEADER (24 bits, BI_RGB, biSizeImage the full size, no palette)
+followed by a bit stream, most significant bit first. The coding is lossless:
+
+```text
+pixels      top row first, left to right, no mark between rows
+predictors  L (x-1, y)  A (x, y-1)  UL (x-1, y-1)  UR (x+1, y-1)  U2R (x+2, y-1);
+            white outside the picture; kept in a move-to-front list,
+            first [L, A, UL, UR, U2R]
+symbols     not swapped: 0 = run, 10 = new colour; swapped: 0 = new colour, 10 = run
+            11 + selector: 0 → rank 1, 100 → 2, 101 → 3, 110 → 4,
+                           1110 → swap the two codes above (no pixel), 1111 unknown
+            a run or 11 + rank is followed by a run length; the predictor at
+            that rank (+1 when the previous symbol was a run shorter than
+            17057, because the front predictor is known to fail) moves to the
+            front and gives the next n pixels
+new colour  differences B, G, R (mod 256) from the left pixel (white at x = 0)
+run length  00 → 1, 01+1 → 2, 100+1 → 4, 101+2 → 6, 1100+3 → 10,
+            1101+3 → 18, 11100+4 → 26, 111010+3 → 42, 111011+4 → 50,
+            111100+5 → 66, 111101+6 → 98, 111110+9 → 162, 111111+14 → 674
+            (base + the extra bits; 17057, the longest, continues the run)
+difference  000 → 0, 001 → +1, 010 → -1; else prefix, sign bit (1 = negative),
+            extra bits: 011+1 → 2, 100+2 → 4, 101+3 → 8, 110+5 → 16,
+            1110+5 → 48, 1111+6 → 80
+end         when every pixel is written; DocuWorks pads the last byte with 1s
+```
+
+[DocuWorks 9 (xdwapi 9.0.1.2), 2026-11-15: 148 pictures added with the API
+from synthetic BMPs decode to the BMPs' pixels exactly, and the API's render
+of such a picture at its own resolution is those pixels. Five pictures in a
+customer's drawing book decode to the last bit, and adding the decoded pixels
+again with the API gives back the stored bytes exactly. The encoder's choices
+(when it swaps the codes, which of several equal predictors it takes) need
+not be known to decode.]
 
 ## 6. Writing (what EZPZ File XDW does)
 

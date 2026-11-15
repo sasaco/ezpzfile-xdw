@@ -24,3 +24,4 @@ pub mod cfb;
 pub mod fresh;
 pub mod fax4;
 pub mod ims;
+pub mod kind10;
