@@ -96,6 +96,21 @@ def drawing(x, y):
     return (255, 255, 255)
 
 
+def photo(x, y):
+    # a photo-like picture: smooth colour gradients, a filled circle, coloured boxes, a thin black line
+    if y == (x * 2 + 30) // 5:
+        return (0, 0, 0)
+    if (x - 200) ** 2 + (y - 90) ** 2 <= 45 ** 2:
+        return (230, 40, 30)
+    if 30 <= x < 90 and 120 <= y < 170:
+        return (20, 160, 60)
+    if 110 <= x < 150 and 20 <= y < 60:
+        return (250, 220, 0)
+    if 250 <= x < 290 and 150 <= y < 190:
+        return (40, 60, 200)
+    return (x * 255 // 299, y * 255 // 199, (255 - (x + y) * 255 // 498) // 2 + 64)
+
+
 PICTURES = {
     "grad-64.bmp": (64, 64, lambda x, y: (x * 4, y * 4, 128), False, 3780),
     "odd-67x66.bmp": (67, 66, odd, False, 3780),
@@ -103,6 +118,7 @@ PICTURES = {
     "two-300x200.bmp": (300, 200, two, False, 3780),
     "grey-401x303.bmp": (401, 303, mixed, True, 3780),
     "drawing-800x600.bmp": (800, 600, drawing, False, 11811),
+    "photo-300x200.bmp": (300, 200, photo, False, 3780),
 }
 
 if __name__ == "__main__":

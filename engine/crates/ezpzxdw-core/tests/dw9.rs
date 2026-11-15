@@ -37,16 +37,40 @@ fn answer(name: &str) -> (u32, u32, Vec<u8>) {
     (w, h, rgb)
 }
 
+/// The engine's picture as RGB: RGBA as it is, a JPEG (a JPEG page, kind 5)
+/// decoded by ezpzxdw_jpeg.
+fn picture_rgb(name: &str, data: &ImageData, w: u32, h: u32) -> Vec<u8> {
+    match data {
+        ImageData::Rgba(rgba) => {
+            assert_eq!(rgba.len(), (w * h * 4) as usize, "{name}: RGBA length");
+            rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect()
+        }
+        ImageData::Jpeg(jpeg) => {
+            let mut dec = ezpzxdw_jpeg::Decoder::new(jpeg.as_slice());
+            let pixels = dec.decode().unwrap();
+            let info = dec.info().unwrap();
+            assert_eq!((info.width as u32, info.height as u32), (w, h), "{name}: JPEG size");
+            match info.pixel_format {
+                ezpzxdw_jpeg::PixelFormat::RGB24 => pixels,
+                ezpzxdw_jpeg::PixelFormat::L8 => pixels.iter().flat_map(|&v| [v; 3]).collect(),
+                other => panic!("{name}: JPEG pixel format {other:?}"),
+            }
+        }
+    }
+}
+
 #[test]
 fn pictures_match_docuworks_9() {
-    let cases: [(&str, u8, f64); 7] = [
+    let cases: [(&str, u8, f64); 9] = [
         ("paste-grad-64", 0, 0.0),
         ("paste-odd-67x66", 0, 0.0),
         ("api-odd-67x66", 0, 0.0),
-        ("file-line-300x200", 5, 0.5),
-        ("mrc-two-300x200", 5, 0.5),
-        ("mrc-grey-401x303", 1, 0.5),
+        ("file-line-300x200", 0, 0.0),
+        ("mrc-two-300x200", 0, 0.0),
+        ("mrc-grey-401x303", 0, 0.0),
         ("api-drawing-800x600", 0, 0.0),
+        ("jpeg-photo-300x200", 0, 0.0),
+        ("jpeg440-photo-300x200", 0, 0.0),
     ];
     for (name, max, mean) in cases {
         let bytes = std::fs::read(dir().join(format!("{name}.xdw"))).unwrap();
@@ -56,12 +80,10 @@ fn pictures_match_docuworks_9() {
         assert_eq!(display.objects_not_drawn, 0, "{name}: objects not drawn");
         assert_eq!(display.images.len(), 1, "{name}: images");
         let image = &display.images[0];
-        let ImageData::Rgba(rgba) = &image.data else {
-            panic!("{name}: the picture is not RGBA");
-        };
         let (w, h, rgb) = answer(name);
         assert_eq!((image.w, image.h), (w, h), "{name}: size");
-        assert_eq!(rgba.len(), (w * h * 4) as usize, "{name}: RGBA length");
+        let ours = picture_rgb(name, &image.data, w, h);
+        assert_eq!(ours.len(), (w * h * 3) as usize, "{name}: RGB length");
 
         // DocuWorks leaves the page's first row and column white: skip them.
         let (mut largest, mut sum, mut count) = (0u8, 0u64, 0u64);
@@ -69,7 +91,7 @@ fn pictures_match_docuworks_9() {
             for x in 1..w as usize {
                 let i = y * w as usize + x;
                 for c in 0..3 {
-                    let d = rgba[i * 4 + c].abs_diff(rgb[i * 3 + c]);
+                    let d = ours[i * 3 + c].abs_diff(rgb[i * 3 + c]);
                     largest = largest.max(d);
                     sum += d as u64;
                     count += 1;
