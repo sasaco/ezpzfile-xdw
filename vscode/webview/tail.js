@@ -8,6 +8,24 @@ download = (bytes, name, type) => HOST.save(bytes, name, type);
 window.print = () => HOST.print();
 HOST.on("savePdf", () => { if (S.ed) savePdf(); });
 
+// The editor draws a picture of a page into the unit square that the transform maps to its place (PICTURE_DRAW in
+// scripts/assemble.mjs). A picture shown at its own size (not rotated, not flipped, within a pixel of its width and
+// height) is put pixel for pixel at the rounded position without smoothing, as the engine's raster puts it, so its
+// edges stay sharp. Any other picture is left to the transform, as upstream draws it.
+function drawPicture(ctx, img) {
+  const t = ctx.getTransform();
+  const w = img.width, h = img.height;
+  if (t.b === 0 && t.c === 0 && t.a > 0 && t.d > 0 && Math.abs(t.a - w) < 1 && Math.abs(t.d - h) < 1) {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(img, Math.round(t.e), Math.round(t.f));
+    ctx.restore();
+    return;
+  }
+  ctx.drawImage(img, 0, 0, 1, 1);
+}
+
 // The spinner (host.js) while the editor checks a file before it opens it (CHECK_MS in scripts/assemble.mjs).
 // After the check nothing waits any more (the engine opens the bytes and the pages are laid out before the screen is
 // drawn again), so the spinner goes when the document shows, or when the editor says why it could not open it.

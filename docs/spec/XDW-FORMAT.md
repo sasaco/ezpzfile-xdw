@@ -355,6 +355,14 @@ thumbnails are stored so, and its render draws them upright; a one-strip
 picture stored bottom-up shows upside down; pastes in documents saved by
 DocuWorks 10 are top-first as well, and scanned pages in strips agree with the
 same book's G4 pages]. The editor writes one strip, top-first.
+Pictures pasted with the editor up to 0.1.5 were written bottom-up and show
+upside down, in DocuWorks as here; they are not turned when read (pasting them
+again puts them right). They can be told from DocuWorks' own: this engine's
+LHA compressor gives exactly the stored strip again when the strip is unpacked
+and packed once more, and DocuWorks' does not (the same length or not, the
+bytes differ) [DocuWorks 9 pastes, `XDW_AddAnnotation` and DocuWorks 10
+documents]. That cannot tell 0.1.5's strips from 0.1.6's, which are packed
+the same way.
 
 [viewer: a picture annotation whose bits are stored plainly shows black].
 

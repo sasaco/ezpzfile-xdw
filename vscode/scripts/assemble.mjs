@@ -5,6 +5,8 @@
 //   - webview/host.js stands in for editor/host.js, and webview/tail.js follows app.js.
 //   - the editor's check of a file before it opens it draws pages for CHECK_MS, not for eight seconds, and
 //     does not refuse the file for a page the engine cannot draw (CHECK_DRAW).
+//   - a picture shown at its own size is drawn at the rounded position without smoothing, as the engine's raster
+//     draws it, not blurred at a fractional one (PICTURE_DRAW).
 // This changes no upstream file (the fork's one change to them is in web/editor/app.js: thumbnails are
 // drawn only near what shows; ../README.md). Pure functions on text, so tests run them without a build.
 
@@ -32,6 +34,15 @@ const UPSTREAM_DRAW = '{ doc.render(drawn); doc.forget(drawn); }';
 export const CHECK_DRAW = '{ try { doc.render(drawn); } catch (err) { if (err instanceof WebAssembly.RuntimeError) throw err; } doc.forget(drawn); }';
 
 /**
+ * How the editor draws a picture of a page. Upstream draws it into the unit square that the page's transform maps to
+ * the picture's place, so a picture shown at its own size lands at a fractional position and is smoothed, and its
+ * edges blur. The engine's own raster puts such a picture pixel for pixel at the rounded position; drawPicture
+ * (webview/tail.js) does the same and leaves every other picture (scaled, rotated, flipped) to the transform.
+ */
+const UPSTREAM_PICTURE = 'ctx.drawImage(img, 0, 0, 1, 1);';
+export const PICTURE_DRAW = 'drawPicture(ctx, img);';
+
+/**
  * Text with the line endings git stores. A checkout on Windows with core.autocrlf has CRLF in every file, and what
  * is put together here (and the tests on it) is written for LF.
  */
@@ -57,6 +68,7 @@ export function editorScript({ editorHtml, glue, i18n, host, app, tail }) {
   const stripped = stripExports(glue);
   let checked = replaceOnce(lf(app), UPSTREAM_CHECK, `const CHECK_MS = ${CHECK_MS};`, `app.js: ${UPSTREAM_CHECK}`);
   checked = replaceOnce(checked, UPSTREAM_DRAW, CHECK_DRAW, `app.js: ${UPSTREAM_DRAW}`);
+  checked = replaceOnce(checked, UPSTREAM_PICTURE, PICTURE_DRAW, `app.js: ${UPSTREAM_PICTURE}`);
   let script = found[1];
   script = replaceOnce(script, '/*__EZPZXDW_GLUE__*/', stripped, 'editor.html: the glue placeholder');
   script = replaceOnce(script, '"/*__EZPZXDW_WASM_URL__*/"', 'document.querySelector(\'meta[name="ezpzxdw-wasm"]\').content', 'editor.html: the .wasm URL placeholder');
