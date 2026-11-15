@@ -3,6 +3,8 @@
 *.xdw
 *.XDW
 *.xbd
+# small DocuWorks 9 samples made from known pictures (see their README)
+!/engine/crates/ezpzxdw-core/tests/fixtures/dw9/*.xdw
 .DS_Store
 /web/pkg/
 /web/dist/
