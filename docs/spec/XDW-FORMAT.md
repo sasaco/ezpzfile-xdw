@@ -372,6 +372,17 @@ Kind 5 (DocuWorks 10 scans, photos): the body's data is a JPEG; 0x87 / 0x88
 are its size in pixels, 0x8b / 0x8c pixels per metre; the content record
 names `cmp` = 5, `dpt` (8 grey, 24 colour), `dpi`.
 
+DocuWorks 9 decodes JPEG pictures (kind 5 pages, the background of kind 11
+pages) exactly as libjpeg-turbo with the fast integer IDCT (`JDCT_IFAST`,
+AAN), fancy upsampling for 4:2:0 and 4:2:2, and jdcolor.c's table-driven
+YCbCr to RGB; 4:4:0 is replicated, not fancy-upsampled, as libjpeg-turbo
+before 2.0. Other decoders (a browser's, or a different IDCT) differ by a few
+levels per channel. [DocuWorks 9 API render (`XDW_ConvertPageToImageFile`) of
+15 kind 5 pages DocuWorks made from BMPs and 13 made from JPEG files stored as
+they are (4:4:4, 4:2:2, 4:2:0, 4:4:0, 4:1:1, grey, progressive 4:2:0 and
+4:4:4): the same pixels as such a decoder; another decoder differed by up to
+5–7 in colour and 1 in grey]
+
 Kind 9 (scans in black and white): the data is CCITT Group 4 (T.6) with no
 header, 0x87 × 0x88 pixels.
 
@@ -399,8 +410,11 @@ kind 3, coding 0x11   Group 4 mask of w × h at (x, y): its black pixels are
 Records are painted in order over white. [DocuWorks 9 API render of 16 such
 pages (line drawings, letters in one and two colours, grey and colour
 backgrounds, 96, 200 and 300 dpi, up to 1200 × 900): the same pixels, but up
-to 5 in colour JPEG backgrounds, where decoders turn YCbCr into RGB a little
-differently]
+to 5 in colour JPEG backgrounds with a different JPEG decoder. With the JPEG
+decoded as for kind 5 above, 20 more such pages (photo-like gradients, masks
+in 3 to 5 colours, long strips) and the samples in
+engine/crates/ezpzxdw-core/tests/fixtures/dw9: the same pixels, JPEG
+backgrounds included]
 
 Scanned and image pages are page EMFs at 600 dpi without a window, that draw
 JPEG pictures with `DWb` + `DWc` (the scanner writes strips of 24 rows). Each

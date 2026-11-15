@@ -9,7 +9,10 @@ No customer material is in these files. The pictures are made by a script.
 
 Made 2026-11-15 on Windows 11 with DocuWorks 9.0.11 (xdwapi.dll 9.0.1.2).
 The pictures come from `pictures.py`: `python pictures.py OUTDIR` writes
-them as BMP files.
+them as BMP files. `pictures.py` needs only Python. `jpeg440.py` turns
+photo-300x200.bmp into photo-300x200-440.jpg, a JPEG with 4:4:0
+subsampling; it needs simplejpeg 1.9.0, numpy and Pillow
+(`uv run --no-project --with simplejpeg==1.9.0 --with numpy --with pillow python -I jpeg440.py OUTDIR/photo-300x200.bmp`).
 
 | file | drawing | how it was made | picture (from pictures.py) |
 |---|---|---|---|
@@ -20,6 +23,8 @@ them as BMP files.
 | mrc-two-300x200.xdw | kind 11 with two masks (grey and RGB) | XDW_CreateXdwFromImageFile, compression 8 (MRC, normal) | two-300x200 |
 | mrc-grey-401x303.xdw | kind 11 with a grey JPEG background | the same, from the 8-bit grey BMP | grey-401x303 |
 | api-drawing-800x600.xdw | picture annotation, kind 10 (predicted runs and new colours, lossless; DocuWorks uses it for large pictures) | drawing-800x600.bmp (300 dpi) added with the API (XDW_AddAnnotation, a bitmap annotation from the file) at 2.54 mm, 2.54 mm on a blank A4 page, as for api-odd-67x66 | drawing-800x600 |
+| jpeg-photo-300x200.xdw | JPEG page, kind 5 (JPEG 4:2:0 made by DocuWorks) | photo-300x200.bmp made into a document with the API (XDW_CreateXdwFromImageFile, `dwapi fromimg`, compression 2) | photo-300x200 |
+| jpeg440-photo-300x200.xdw | JPEG page, kind 5 (JPEG 4:4:0, kept as is: the page's data is the .jpg byte for byte) | photo-300x200-440.jpg (from jpeg440.py) made into a document the same way, compression 0 | photo-300x200 |
 
 ## The answers
 
@@ -34,6 +39,11 @@ resolution, and cropped at round(1/100 mm × 300 / 2540). Kind 10 is
 lossless: this render is the BMP's pixels exactly, the first row and column
 included (the picture starts 30 px into the page).
 
+jpeg-photo-300x200.png is rendered at 96 dpi and jpeg440-photo-300x200.png
+at 200 dpi: DocuWorks makes a page from a JPEG file at 200 dpi, so 200 dpi is
+that picture's own resolution. Each is cropped to the page's body at
+round(1/100 mm × dpi / 2540), which is 300 x 200 px, the JPEG's size.
+
 ## Notes
 
 - DocuWorks' render leaves the page's first row and column white. So the
@@ -41,8 +51,10 @@ included (the picture starts 30 px into the page).
 - A picture pasted through Paint is not always the BMP's pixels exactly.
   paste-odd-67x66 is blended. This is why the answer is DocuWorks' render
   and not the BMP.
-- Allowed differences: none for kind 7 and kind 10. For kind 11, up to 1 where the
-  background JPEG is grey, and up to 5 (mean under 0.5) where it is a
-  colour JPEG. JPEG decoders turn YCbCr into RGB a little differently.
+- Allowed differences: none, for every kind. The engine decodes JPEGs as
+  libjpeg-turbo's fast integer IDCT with fancy upsampling (4:4:0 is
+  replicated, not smoothed), which is how DocuWorks 9 draws them (see
+  `engine/crates/ezpzxdw-jpeg/README.md`). This holds for the JPEG
+  backgrounds of kind 11 and for JPEG pages (kind 5).
 - Rows of kind 7 are stored top-first, although the BITMAPINFO height is
   positive. A picture stored bottom-up shows upside down in DocuWorks 9.

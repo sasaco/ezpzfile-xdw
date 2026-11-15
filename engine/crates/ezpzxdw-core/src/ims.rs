@@ -137,15 +137,15 @@ fn background(out: &mut Canvas, jpeg: &[u8], r: [u32; 4], (sw, sh): (u32, u32), 
     if !limits::image(sw as usize, sh as usize) || crate::pages::jpeg_size(jpeg)? != (sw, sh) {
         return None;
     }
-    let mut dec = jpeg_decoder::Decoder::new(jpeg);
+    let mut dec = ezpzxdw_jpeg::Decoder::new(jpeg);
     let pixels = dec.decode().ok()?;
     let info = dec.info()?;
     if (info.width as u32, info.height as u32) != (sw, sh) {
         return None;
     }
     let ch: usize = match info.pixel_format {
-        jpeg_decoder::PixelFormat::L8 => 1,
-        jpeg_decoder::PixelFormat::RGB24 => 3,
+        ezpzxdw_jpeg::PixelFormat::L8 => 1,
+        ezpzxdw_jpeg::PixelFormat::RGB24 => 3,
         _ => return None,
     };
     if pixels.len() != (sw as usize).checked_mul(sh as usize)?.checked_mul(ch)? {
@@ -262,10 +262,10 @@ mod tests {
 
     #[test]
     fn paints_background_and_mask() {
-        let mut dec = jpeg_decoder::Decoder::new(TINY);
+        let mut dec = ezpzxdw_jpeg::Decoder::new(TINY);
         let jp = dec.decode().unwrap();
         let info = dec.info().unwrap();
-        assert_eq!((info.width, info.height, info.pixel_format), (24, 16, jpeg_decoder::PixelFormat::RGB24));
+        assert_eq!((info.width, info.height, info.pixel_format), (24, 16, ezpzxdw_jpeg::PixelFormat::RGB24));
         let src = |x: usize, y: usize| {
             let i = ((y / 2) * 24 + x / 2) * 3;
             [jp[i], jp[i + 1], jp[i + 2], 255]

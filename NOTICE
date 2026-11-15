@@ -17,6 +17,13 @@ Reference only (no code copied):
 Libraries
   - encoding_rs (MIT/Apache-2.0), serde / serde_json (MIT/Apache-2.0),
     wasm-bindgen (MIT/Apache-2.0)
+  - jpeg-decoder 0.3.2 (MIT/Apache-2.0), copied and changed in
+    engine/crates/ezpzxdw-jpeg
+
+This software is based in part on the work of the Independent JPEG Group.
+The JPEG IDCT, upsampling and colour conversion in engine/crates/ezpzxdw-jpeg
+are translated from libjpeg-turbo 3.0.4 (IJG License; README.ijg in that
+folder).
 
 User interface assets
   - Icons: Lucide (https://lucide.dev), ISC License.
