@@ -23,3 +23,4 @@ pub mod pages;
 pub mod cfb;
 pub mod fresh;
 pub mod fax4;
+pub mod ims;

@@ -445,6 +445,11 @@ impl Document {
                     .and_then(|(pw, ph)| crate::fax4::decode(&c.data, pw, ph));
                 fill_box(out, img, "scanned page (G4)");
             }
+            11 => {
+                // an image file made into a page with high compression: a JPEG
+                // background and one-colour Group 4 masks (see ims)
+                fill_box(out, crate::ims::decode(&c.data, c.px), "image page (high compression)");
+            }
             k => {
                 out.skipped.push(format!("{}: drawing kind {k}", o.kind_name));
                 out.objects_not_drawn += 1;
@@ -476,7 +481,7 @@ pub struct Content {
     pub kind: i64,
     pub data: Vec<u8>,
     /// Pixel width × height (fields 0x87, 0x88) when the drawing states them,
-    /// as scanned pages (kind 9) do.
+    /// as scanned pages (kind 9) and high-compression image pages (kind 11) do.
     pub px: Option<(u32, u32)>,
 }
 
