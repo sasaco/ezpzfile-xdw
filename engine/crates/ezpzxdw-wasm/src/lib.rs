@@ -132,18 +132,38 @@ fn display_json(d: &Display) -> String {
     o
 }
 
+/// The largest JPEG picture (in pixels) the screen gets as RGBA decoded here.
+/// Decoding one needs about 8 bytes per pixel at its peak (the decoder's
+/// planes, its 3-byte RGB output and the 4-byte RGBA), the wasm build has at
+/// most 1 GiB (`engine/.cargo/config.toml`), and the pages drawn at once keep
+/// their RGBA in the cache: 20 M pixels (A3 at 300 dpi is 17.4 M) peaks near
+/// 160 MB and stays 80 MB. Larger pictures stay JPEG for the browser to decode,
+/// as before 0.1.8 (its colours differ from DocuWorks' by a few levels).
+const SCREEN_JPEG_MAX_PIXELS: u64 = 20_000_000;
+
+/// Does the screen get this JPEG as RGBA? Its size is read from the header,
+/// before anything is decoded.
+fn screen_decodes(jpeg: &[u8]) -> bool {
+    ezpzxdw_core::pages::jpeg_size(jpeg).is_some_and(|(w, h)| w as u64 * h as u64 <= SCREEN_JPEG_MAX_PIXELS)
+}
+
 /// Hand the page's JPEG pictures (picture pages, BI_JPEG bitmaps, JPEGs in
 /// EMF) to the screen as RGBA decoded as DocuWorks draws them
-/// (`ezpzxdw_core::jpeg`): a browser's decoder differs by a few levels. The
-/// decoded pixels count against the document's limits; a picture that cannot
-/// be decoded, or would go past them, stays a JPEG for the browser to decode.
+/// (`ezpzxdw_core::jpeg`): a browser's decoder differs by a few levels. All of
+/// a page's pictures are decoded in one scope, so together they count against
+/// the document's limits; a picture that cannot be decoded, would go past
+/// them, or is larger than `SCREEN_JPEG_MAX_PIXELS` stays a JPEG for the
+/// browser to decode.
 fn decode_jpegs(d: &mut Display, limits: &ezpzxdw_core::limits::Limits) {
-    if !d.images.iter().any(|im| matches!(im.data, ImageData::Jpeg(_))) {
+    if !d.images.iter().any(|im| matches!(&im.data, ImageData::Jpeg(b) if screen_decodes(b))) {
         return;
     }
     let _ = ezpzxdw_core::limits::scope(limits, || {
         for im in &mut d.images {
             if let ImageData::Jpeg(b) = &im.data {
+                if !screen_decodes(b) {
+                    continue;
+                }
                 if let Some((w, h, px)) = ezpzxdw_core::jpeg::rgba(b) {
                     *im = Image { w, h, data: ImageData::Rgba(px) };
                 }
@@ -153,10 +173,18 @@ fn decode_jpegs(d: &mut Display, limits: &ezpzxdw_core::limits::Limits) {
     });
 }
 
+/// A page's drawing kept in memory, and whether `render` has already handed
+/// its JPEG pictures to `decode_jpegs` (each page's are tried once: pictures
+/// left JPEG then stay JPEG until the drawing is dropped).
+struct Cached {
+    d: Display,
+    decoded: bool,
+}
+
 #[wasm_bindgen]
 pub struct XdwDoc {
     doc: Document,
-    cache: HashMap<usize, Display>,
+    cache: HashMap<usize, Cached>,
     undo: Vec<Vec<Record>>,
     redo: Vec<Vec<Record>>,
     saved_state: Vec<Record>,
@@ -193,16 +221,16 @@ impl XdwDoc {
     /// Characters left out of page `page` because they are covered (draws the page).
     #[wasm_bindgen(js_name = hiddenChars)]
     pub fn hidden_chars(&mut self, page: usize) -> Result<usize, JsError> {
-        Ok(self.drawn(page)?.hidden_chars)
+        Ok(self.drawn(page)?.d.hidden_chars)
     }
 
     /// Page `page`'s drawing, drawn once and kept until `forget` or an edit.
     /// Its JPEG pictures stay JPEG bytes here: `text` and `hiddenChars` run over
     /// every page without `forget`, and need no pixels.
-    fn drawn(&mut self, page: usize) -> Result<&mut Display, JsError> {
+    fn drawn(&mut self, page: usize) -> Result<&mut Cached, JsError> {
         Ok(match self.cache.entry(page) {
             std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-            std::collections::hash_map::Entry::Vacant(v) => v.insert(self.doc.render(page).map_err(err)?),
+            std::collections::hash_map::Entry::Vacant(v) => v.insert(Cached { d: self.doc.render(page).map_err(err)?, decoded: false }),
         })
     }
 
@@ -249,16 +277,19 @@ impl XdwDoc {
     /// What page `n` looks like (JSON display list; pictures via `image`).
     pub fn render(&mut self, page: usize) -> Result<String, JsError> {
         let limits = self.doc.limits;
-        let d = self.drawn(page)?;
-        decode_jpegs(d, &limits);
-        Ok(display_json(d))
+        let c = self.drawn(page)?;
+        if !c.decoded {
+            decode_jpegs(&mut c.d, &limits);
+            c.decoded = true;
+        }
+        Ok(display_json(&c.d))
     }
 
     /// Picture `idx` of page `n` as JPEG bytes or RGBA pixels (see `render`).
     pub fn image(&self, page: usize, idx: usize) -> Vec<u8> {
         self.cache
             .get(&page)
-            .and_then(|d| d.images.get(idx))
+            .and_then(|c| c.d.images.get(idx))
             .map(|im| match &im.data {
                 ImageData::Jpeg(b) | ImageData::Rgba(b) => b.clone(),
             })
@@ -272,7 +303,7 @@ impl XdwDoc {
     }
 
     pub fn text(&mut self, page: usize) -> Result<String, JsError> {
-        Ok(self.drawn(page)?.text())
+        Ok(self.drawn(page)?.d.text())
     }
 
     fn before(&mut self) {
@@ -570,5 +601,61 @@ impl XdwDoc {
     pub fn text_box(text: &str, size: f64) -> String {
         let (w, h) = ezpzxdw_core::edit::text_box(text, size);
         format!("[{w},{h}]")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TINY: &[u8] = include_bytes!("../../ezpzxdw-core/tests/data/tiny.jpg");
+
+    /// TINY with its header saying `w` × `h` pixels.
+    fn sized(w: u16, h: u16) -> Vec<u8> {
+        let mut b = TINY.to_vec();
+        let p = b.windows(2).position(|m| m == [0xff, 0xc0]).unwrap();
+        b[p + 5..p + 7].copy_from_slice(&h.to_be_bytes());
+        b[p + 7..p + 9].copy_from_slice(&w.to_be_bytes());
+        assert_eq!(ezpzxdw_core::pages::jpeg_size(&b), Some((w as u32, h as u32)));
+        b
+    }
+
+    fn page_of(jpegs: Vec<Vec<u8>>) -> Display {
+        let images = jpegs.into_iter().map(|b| Image { w: 1, h: 1, data: ImageData::Jpeg(b) }).collect();
+        Display { w: 21000.0, h: 29700.0, images, ..Default::default() }
+    }
+
+    #[test]
+    fn screen_decodes_up_to_the_cap() {
+        assert!(screen_decodes(TINY));
+        assert!(screen_decodes(&sized(5000, 4000))); // exactly 20 M
+        assert!(!screen_decodes(&sized(5000, 4001)));
+        assert!(!screen_decodes(b"not a jpeg"));
+    }
+
+    #[test]
+    fn small_jpeg_becomes_rgba_large_stays_jpeg() {
+        let mut d = page_of(vec![TINY.to_vec(), sized(6000, 6000)]);
+        decode_jpegs(&mut d, &ezpzxdw_core::limits::Limits::default());
+        assert_eq!((d.images[0].w, d.images[0].h), (24, 16));
+        assert!(matches!(&d.images[0].data, ImageData::Rgba(px) if px.len() == 24 * 16 * 4));
+        assert!(matches!(d.images[1].data, ImageData::Jpeg(_)));
+    }
+
+    #[test]
+    fn a_cached_page_is_converted_once() {
+        let mut x = XdwDoc::blank(21000.0, 29700.0).unwrap();
+        x.cache.insert(0, Cached { d: page_of(vec![TINY.to_vec()]), decoded: false });
+        x.render(0).unwrap();
+        assert!(x.cache[&0].decoded);
+        assert_eq!(x.image(0, 0).len(), 24 * 16 * 4);
+        // a picture left JPEG (here put back by hand) is not tried again
+        x.cache.get_mut(&0).unwrap().d.images[0].data = ImageData::Jpeg(TINY.to_vec());
+        assert!(x.render(0).unwrap().contains("\"k\":\"jpeg\""));
+        // dropping the drawing drops the mark with it
+        x.forget(0);
+        assert!(!x.cache.contains_key(&0));
+        x.cache.insert(0, Cached { d: page_of(vec![TINY.to_vec()]), decoded: false });
+        assert!(x.render(0).unwrap().contains("\"k\":\"rgba\""));
     }
 }

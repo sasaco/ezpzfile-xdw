@@ -26,7 +26,12 @@ pub fn rgba(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     let mut out = Vec::with_capacity(w as usize * h as usize * 4);
     match info.pixel_format {
         PixelFormat::L8 => px.iter().for_each(|&g| out.extend_from_slice(&[g, g, g, 255])),
-        PixelFormat::L16 => px.chunks_exact(2).for_each(|g| out.extend_from_slice(&[g[0], g[0], g[0], 255])),
+        // lossless JPEGs over 8 bits come as native-endian u16 (ezpzxdw-jpeg's
+        // decoder/lossless.rs `convert_to_u8`): keep the high byte
+        PixelFormat::L16 => px.chunks_exact(2).for_each(|g| {
+            let v = (u16::from_ne_bytes([g[0], g[1]]) >> 8) as u8;
+            out.extend_from_slice(&[v, v, v, 255]);
+        }),
         PixelFormat::RGB24 => px.chunks_exact(3).for_each(|p| out.extend_from_slice(&[p[0], p[1], p[2], 255])),
         PixelFormat::CMYK32 => px.chunks_exact(4).for_each(|p| {
             // Adobe JPEGs store CMYK inverted

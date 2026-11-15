@@ -38,23 +38,18 @@ fn answer(name: &str) -> (u32, u32, Vec<u8>) {
 }
 
 /// The engine's picture as RGB: RGBA as it is, a JPEG (a JPEG page, kind 5)
-/// decoded by ezpzxdw_jpeg.
+/// decoded by `ezpzxdw_core::jpeg::rgba`, the path the raster and the screen use.
 fn picture_rgb(name: &str, data: &ImageData, w: u32, h: u32) -> Vec<u8> {
+    let rgba_rgb = |rgba: &[u8]| -> Vec<u8> {
+        assert_eq!(rgba.len(), (w * h * 4) as usize, "{name}: RGBA length");
+        rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect()
+    };
     match data {
-        ImageData::Rgba(rgba) => {
-            assert_eq!(rgba.len(), (w * h * 4) as usize, "{name}: RGBA length");
-            rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect()
-        }
+        ImageData::Rgba(rgba) => rgba_rgb(rgba),
         ImageData::Jpeg(jpeg) => {
-            let mut dec = ezpzxdw_jpeg::Decoder::new(jpeg.as_slice());
-            let pixels = dec.decode().unwrap();
-            let info = dec.info().unwrap();
-            assert_eq!((info.width as u32, info.height as u32), (w, h), "{name}: JPEG size");
-            match info.pixel_format {
-                ezpzxdw_jpeg::PixelFormat::RGB24 => pixels,
-                ezpzxdw_jpeg::PixelFormat::L8 => pixels.iter().flat_map(|&v| [v; 3]).collect(),
-                other => panic!("{name}: JPEG pixel format {other:?}"),
-            }
+            let (jw, jh, rgba) = ezpzxdw_core::jpeg::rgba(jpeg).unwrap_or_else(|| panic!("{name}: JPEG not decoded"));
+            assert_eq!((jw, jh), (w, h), "{name}: JPEG size");
+            rgba_rgb(&rgba)
         }
     }
 }
