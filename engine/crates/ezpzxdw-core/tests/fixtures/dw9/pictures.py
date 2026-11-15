@@ -7,8 +7,11 @@ import struct
 import sys
 
 
-def bmp(path, w, h, px, grey=False):
-    """px(x, y) -> (r, g, b), y = 0 at the top; rows stored bottom-up."""
+def bmp(path, w, h, px, grey=False, ppm=3780):
+    """px(x, y) -> (r, g, b), y = 0 at the top; rows stored bottom-up.
+
+    ppm = pixels per metre (3780 = 96 dpi, 11811 = 300 dpi).
+    """
     bpp = 8 if grey else 24
     stride = (w * bpp // 8 + 3) & ~3
     rows = []
@@ -20,7 +23,7 @@ def bmp(path, w, h, px, grey=False):
         rows.append(bytes(row) + b"\0" * (stride - len(row)))
     bits = b"".join(rows)
     pal = b"".join(bytes((i, i, i, 0)) for i in range(256)) if grey else b""
-    info = struct.pack("<IiiHHIIiiII", 40, w, h, 1, bpp, 0, len(bits), 3780, 3780, 256 if grey else 0, 0)
+    info = struct.pack("<IiiHHIIiiII", 40, w, h, 1, bpp, 0, len(bits), ppm, ppm, 256 if grey else 0, 0)
     off = 14 + len(info) + len(pal)
     with open(path, "wb") as f:
         f.write(struct.pack("<2sIHHI", b"BM", off + len(bits), 0, 0, off) + info + pal + bits)
@@ -73,15 +76,36 @@ def mixed(x, y):
     return (255, 255, 255)
 
 
+def drawing(x, y):
+    # a drawing-like picture: black grid, red diagonals, coloured boxes, a smooth box and a noisy patch
+    if 100 <= x < 148 and 400 <= y < 432:
+        return ((x * 5) % 256, (y * 7) % 256, ((x + y) * 3) % 256)
+    if 600 <= x < 624 and 100 <= y < 124:
+        h = (x * 2654435761 + y * 40503) & 0xffffffff
+        return (h & 255, (h >> 8) & 255, (h >> 16) & 255)
+    if x % 50 == 0 or y % 50 == 0:
+        return (0, 0, 0)
+    if abs(x - 2 * y) <= 1 or x + y == 700:
+        return (255, 0, 0)
+    if 220 <= x <= 330 and 140 <= y <= 230:
+        return (0, 0, 255) if (x in (220, 330) or y in (140, 230)) else (200, 220, 255)
+    if 400 <= x <= 470 and 300 <= y <= 380 and (x + y) % 3 == 0:
+        return (0, 128, 0)
+    if y == 520 and (x // 6) % 2 == 0:
+        return (128, 128, 128)
+    return (255, 255, 255)
+
+
 PICTURES = {
-    "grad-64.bmp": (64, 64, lambda x, y: (x * 4, y * 4, 128), False),
-    "odd-67x66.bmp": (67, 66, odd, False),
-    "line-300x200.bmp": (300, 200, line, False),
-    "two-300x200.bmp": (300, 200, two, False),
-    "grey-401x303.bmp": (401, 303, mixed, True),
+    "grad-64.bmp": (64, 64, lambda x, y: (x * 4, y * 4, 128), False, 3780),
+    "odd-67x66.bmp": (67, 66, odd, False, 3780),
+    "line-300x200.bmp": (300, 200, line, False, 3780),
+    "two-300x200.bmp": (300, 200, two, False, 3780),
+    "grey-401x303.bmp": (401, 303, mixed, True, 3780),
+    "drawing-800x600.bmp": (800, 600, drawing, False, 11811),
 }
 
 if __name__ == "__main__":
     os.makedirs(sys.argv[1], exist_ok=True)
-    for name, (w, h, px, grey) in PICTURES.items():
-        bmp(os.path.join(sys.argv[1], name), w, h, px, grey)
+    for name, (w, h, px, grey, ppm) in PICTURES.items():
+        bmp(os.path.join(sys.argv[1], name), w, h, px, grey, ppm)

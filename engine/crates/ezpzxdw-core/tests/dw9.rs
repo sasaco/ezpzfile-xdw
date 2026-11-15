@@ -39,13 +39,14 @@ fn answer(name: &str) -> (u32, u32, Vec<u8>) {
 
 #[test]
 fn pictures_match_docuworks_9() {
-    let cases: [(&str, u8, f64); 6] = [
+    let cases: [(&str, u8, f64); 7] = [
         ("paste-grad-64", 0, 0.0),
         ("paste-odd-67x66", 0, 0.0),
         ("api-odd-67x66", 0, 0.0),
         ("file-line-300x200", 5, 0.5),
         ("mrc-two-300x200", 5, 0.5),
         ("mrc-grey-401x303", 1, 0.5),
+        ("api-drawing-800x600", 0, 0.0),
     ];
     for (name, max, mean) in cases {
         let bytes = std::fs::read(dir().join(format!("{name}.xdw"))).unwrap();

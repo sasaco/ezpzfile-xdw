@@ -377,6 +377,9 @@ impl Document {
             },
             Drawing::Inline(v) => Content::of_fields(&v),
         }?;
+        if c.kind == 10 {
+            return crate::kind10::decode(&c.data, c.px);
+        }
         if c.data.get(40..44) == Some(b" EMF") {
             emf::single_dib(&c.data)
         } else {
@@ -449,6 +452,10 @@ impl Document {
                 // an image file made into a page with high compression: a JPEG
                 // background and one-colour Group 4 masks (see ims)
                 fill_box(out, crate::ims::decode(&c.data, c.px), "image page (high compression)");
+            }
+            10 => {
+                // a picture DocuWorks stored losslessly: predicted runs and new colours (see kind10)
+                fill_box(out, crate::kind10::decode(&c.data, c.px), "picture (kind 10)");
             }
             k => {
                 out.skipped.push(format!("{}: drawing kind {k}", o.kind_name));

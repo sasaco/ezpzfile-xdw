@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error a plain module of the build
-import { CHECK_DRAW, CHECK_MS, editorPage, editorScript, handlerHashes, lf, stripExports } from '../scripts/assemble.mjs';
+import { CHECK_DRAW, CHECK_MS, editorPage, editorScript, handlerHashes, lf, PICTURE_DRAW, stripExports } from '../scripts/assemble.mjs';
 
 const root = join(__dirname, '..');
 // With the line endings git stores: a checkout on Windows (core.autocrlf) has CRLF.
@@ -109,6 +109,43 @@ describe('the editor script', () => {
     expect(() => run((page) => { if (page === 2) throw new Trap('unreachable'); })).toThrow('unreachable');
     const parts = { editorHtml, glue: GLUE, i18n: '', host, tail: '' };
     expect(() => editorScript({ ...parts, app: app.replace('doc.forget(drawn); }', 'doc.forget(drawn) }') })).toThrow('doc.render(drawn)');
+  });
+
+  it('draws a picture at its own size at the rounded position, and fails when upstream changes that line', () => {
+    expect(app).toContain('ctx.drawImage(img, 0, 0, 1, 1);');
+    // The transform before it maps the unit square to the picture's place.
+    expect(app).toContain('ctx.transform(m[0], m[1], m[2], m[3], m[4], m[5]);');
+    expect(script).toContain(PICTURE_DRAW);
+    expect(script).toContain(`if (it[5]) ctx.globalCompositeOperation = "multiply";\n      ${PICTURE_DRAW}\n`);
+    expect(script).toMatch(/^function drawPicture\(ctx, img\) \{$/m);
+    const parts = { editorHtml, glue: GLUE, i18n: '', host, tail: '' };
+    expect(() => editorScript({ ...parts, app: app.replace('ctx.drawImage(img, 0, 0, 1, 1);', 'ctx.drawImage(img, 0, 0, 1, 1)') })).toThrow('ctx.drawImage');
+  });
+
+  it('places a picture at its own size pixel for pixel, and leaves others to the transform', () => {
+    const src = /^function drawPicture[\s\S]*?^}/m.exec(read('webview', 'tail.js'))![0];
+    const drawPicture = new Function(`${src}\nreturn drawPicture;`)();
+    type T = { a: number; b: number; c: number; d: number; e: number; f: number };
+    const draw = (t: T) => {
+      const calls: unknown[][] = [];
+      const ctx = {
+        imageSmoothingEnabled: true,
+        getTransform: () => t,
+        save: () => calls.push(['save']),
+        restore: () => calls.push(['restore']),
+        setTransform: (...args: number[]) => calls.push(['setTransform', ...args]),
+        drawImage(...args: unknown[]) { calls.push(['drawImage', ...args, this.imageSmoothingEnabled]); },
+      };
+      drawPicture(ctx, img);
+      return calls;
+    };
+    const img = { width: 100, height: 50 };
+    const own = { a: 100.4, b: 0, c: 0, d: 50.6, e: 10.5, f: 20.4 };
+    expect(draw(own)).toEqual([['save'], ['setTransform', 1, 0, 0, 1, 0, 0], ['drawImage', img, 11, 20, false], ['restore']]);
+    // twice its size, rotated, flipped: the unit square, smoothed
+    expect(draw({ ...own, a: 200 })).toEqual([['drawImage', img, 0, 0, 1, 1, true]]);
+    expect(draw({ ...own, b: 1 })).toEqual([['drawImage', img, 0, 0, 1, 1, true]]);
+    expect(draw({ ...own, a: -100 })).toEqual([['drawImage', img, 0, 0, 1, 1, true]]);
   });
 
   it('finds what the engine wrappers lean on: the search and saving as text read page texts and do not forget', () => {
