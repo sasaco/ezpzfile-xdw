@@ -222,19 +222,23 @@ pub fn info_len(d: &[u8]) -> Option<usize> {
 /// compressed with LHA -lh5-. Small pictures have one strip; scanned pages
 /// are cut into strips of a few hundred rows.
 ///
+/// The strip form keeps rows top-first although the height is positive, in
+/// one strip or several (DocuWorks 9 API render of its own pastes,
+/// API-added pictures and thumbnails, and of pastes in DocuWorks 10-saved
+/// documents; scanned pages checked against the same book's G4 pages).
+///
 /// Returns the picture and whether its rows were stored bottom-up (what a
 /// caller cropping in DIB terms needs).
 pub fn decode_stored(d: &[u8]) -> Option<(Image, bool)> {
     let at = info_len(d)?;
     let bmi = &d[..at];
     let rest = d.get(at..)?;
-    let Some((bits, strips)) = stored_strips(rest) else {
+    let Some(bits) = stored_strips(rest) else {
         return Some((decode(bmi, rest)?, !info(bmi)?.top_down));
     };
-    if strips > 1 {
-        // Scanned pages in strips keep their rows top-first although the
-        // height is positive (checked against the same book's G4 pages):
-        // read them as a top-down DIB.
+    if u32le(bmi, 0) >= 40 {
+        // Strips keep their rows top-first although the height is positive,
+        // in one strip or several: read them as a top-down DIB.
         let mut bmi = bmi.to_vec();
         let h = i32::from_le_bytes([bmi[8], bmi[9], bmi[10], bmi[11]]);
         if h > 0 {
@@ -245,10 +249,10 @@ pub fn decode_stored(d: &[u8]) -> Option<(Image, bool)> {
     Some((decode(bmi, &bits)?, !info(bmi)?.top_down))
 }
 
-/// The bits of a stored DIB's strips, expanded and joined, and the number of
-/// strips; None when `rest` is not in that form (then it is the bits themselves).
+/// The bits of a stored DIB's strips, expanded and joined; None when `rest`
+/// is not in that form (then it is the bits themselves).
 /// Each strip's expansion is checked and counted by [`crate::lzh::decompress`].
-fn stored_strips(rest: &[u8]) -> Option<(Vec<u8>, usize)> {
+fn stored_strips(rest: &[u8]) -> Option<Vec<u8>> {
     if rest.len() < 16 {
         return None;
     }
@@ -269,14 +273,25 @@ fn stored_strips(rest: &[u8]) -> Option<(Vec<u8>, usize)> {
         bits.extend(crate::lzh::decompress(data, size).ok()?);
         at += 12 + stored;
     }
-    Some((bits, n))
+    Some(bits)
 }
 
-/// The DocuWorks form of a DIB: `bmi` + compressed bits block.
+/// The DocuWorks form of a DIB: `bmi` + compressed bits block, in one strip,
+/// rows top-first as DocuWorks writes and reads them. `bits` are in the order
+/// the header says (bottom-up for a positive height); the header is written
+/// unchanged.
 pub fn encode_stored(bmi: &[u8], bits: &[u8], rows: u32) -> Vec<u8> {
-    let packed = crate::lzh::compress(bits);
+    let h = bmi.get(8..12).map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]])).unwrap_or(0);
+    let flip = u32le(bmi, 0) >= 40 && h > 0 && rows > 0 && bits.len() % rows as usize == 0;
+    let stored: Vec<u8> = if flip {
+        let stride = bits.len() / rows as usize;
+        if stride == 0 { bits.to_vec() } else { bits.chunks(stride).rev().flatten().copied().collect() }
+    } else {
+        bits.to_vec()
+    };
+    let packed = crate::lzh::compress(&stored);
     let mut out = bmi.to_vec();
-    for v in [1u32, packed.len() as u32, bits.len() as u32, rows] {
+    for v in [1u32, packed.len() as u32, stored.len() as u32, rows] {
         out.extend_from_slice(&v.to_le_bytes());
     }
     out.extend_from_slice(&packed);
@@ -337,9 +352,41 @@ mod tests {
         let mut top_down = bmi.clone();
         top_down[8..12].copy_from_slice(&(-2i32).to_le_bytes());
         assert_eq!(decode_stored(&d).unwrap(), (decode(&top_down, &joined).unwrap(), false));
-        // the one-strip form still reads, bottom-up as its header says
+        // the one-strip form round-trips: written top-first, read top-first
         let one = encode_stored(&bmi, &joined, 2);
-        assert_eq!(decode_stored(&one).unwrap(), (decode(&bmi, &joined).unwrap(), true));
+        assert_eq!(decode_stored(&one).unwrap(), (decode(&bmi, &joined).unwrap(), false));
+    }
+
+    #[test]
+    fn one_strip_rows_are_top_first() {
+        // 2x2, 1 bpp, palette black/white, positive height; one strip as
+        // DocuWorks writes it, first stored row = top (a set bit is colour 1,
+        // white)
+        let mut bmi = vec![0u8; 40 + 8];
+        bmi[0] = 40;
+        bmi[4] = 2;
+        bmi[8] = 2;
+        bmi[12] = 1;
+        bmi[14] = 1;
+        bmi[44] = 255;
+        bmi[45] = 255;
+        bmi[46] = 255;
+        let rows = [0b0100_0000u8, 0, 0, 0, 0b1000_0000, 0, 0, 0];
+        let packed = crate::lzh::compress(&rows);
+        let mut d = bmi.clone();
+        for v in [1u32, packed.len() as u32, 8, 2] {
+            d.extend(v.to_le_bytes());
+        }
+        d.extend(packed);
+        let (img, bottom_up) = decode_stored(&d).unwrap();
+        assert!(!bottom_up);
+        let ImageData::Rgba(p) = img.data else { panic!() };
+        // top row = first stored row: black, white
+        assert_eq!(&p[0..3], &[0, 0, 0]);
+        assert_eq!(&p[4..7], &[255, 255, 255]);
+        // bottom row = second stored row: white, black
+        assert_eq!(&p[8..11], &[255, 255, 255]);
+        assert_eq!(&p[12..15], &[0, 0, 0]);
     }
 
     #[test]
