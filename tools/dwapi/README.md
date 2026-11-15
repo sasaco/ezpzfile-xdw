@@ -15,6 +15,8 @@ and run it directly:
     dwapi.exe render C:\path\file.xdw 1 C:\path\p1.bmp 96 > out.txt
 
 Redirect the output to a file there too (see the note below).
+`render` does not overwrite: when the output file is already there it fails
+with 80070050 (file exists) and leaves the old picture, so delete it first.
 
 Under Wine:
 
