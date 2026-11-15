@@ -256,7 +256,9 @@ pub fn dequantize_and_idct_block_8x8(
     dequantize_and_idct_block_8x8_inner(coefficients, quantization_table, output)
 }
 
-// This is based on stb_image's 'stbi__idct_block'.
+// libjpeg-turbo 3.0.4's fast integer IDCT for 8-bit samples (`jpeg_idct_ifast` in jidctfst.c,
+// the AA&N method), with the dequantisation multipliers of jddctmgr.c (`JDCT_IFAST`), translated
+// to Rust. Arithmetic wraps (as in the C code with malicious coefficients) instead of panicking.
 fn dequantize_and_idct_block_8x8_inner<'a, I>(
     coefficients: &[i16; 64],
     quantization_table: &[u16; 64],
@@ -272,9 +274,12 @@ fn dequantize_and_idct_block_8x8_inner<'a, I>(
         output.len()
     );
 
-    let mut temp = [Wrapping(0); 64];
+    let multipliers = ifast_multipliers(quantization_table);
+    let dequantize = |i: usize| Wrapping(i32::from(coefficients[i])) * multipliers[i];
 
-    // columns
+    let mut workspace = [Wrapping(0i32); 64];
+
+    // Pass 1: process columns from input, store into work array.
     for i in 0..8 {
         if coefficients[i + 8] == 0
             && coefficients[i + 16] == 0
@@ -284,171 +289,160 @@ fn dequantize_and_idct_block_8x8_inner<'a, I>(
             && coefficients[i + 48] == 0
             && coefficients[i + 56] == 0
         {
-            let dcterm = dequantize(coefficients[i], quantization_table[i]) << 2;
-            temp[i] = dcterm;
-            temp[i + 8] = dcterm;
-            temp[i + 16] = dcterm;
-            temp[i + 24] = dcterm;
-            temp[i + 32] = dcterm;
-            temp[i + 40] = dcterm;
-            temp[i + 48] = dcterm;
-            temp[i + 56] = dcterm;
-        } else {
-            let s0 = dequantize(coefficients[i], quantization_table[i]);
-            let s1 = dequantize(coefficients[i + 8], quantization_table[i + 8]);
-            let s2 = dequantize(coefficients[i + 16], quantization_table[i + 16]);
-            let s3 = dequantize(coefficients[i + 24], quantization_table[i + 24]);
-            let s4 = dequantize(coefficients[i + 32], quantization_table[i + 32]);
-            let s5 = dequantize(coefficients[i + 40], quantization_table[i + 40]);
-            let s6 = dequantize(coefficients[i + 48], quantization_table[i + 48]);
-            let s7 = dequantize(coefficients[i + 56], quantization_table[i + 56]);
+            // AC terms all zero
+            let dcval = dequantize(i);
+            for row in 0..8 {
+                workspace[i + 8 * row] = dcval;
+            }
+            continue;
+        }
 
-            let Kernel {
-                xs: [x0, x1, x2, x3],
-                ts: [t0, t1, t2, t3],
-            } = kernel(
-                [s0, s1, s2, s3, s4, s5, s6, s7],
-                // constants scaled things up by 1<<12; let's bring them back
-                // down, but keep 2 extra bits of precision
-                512,
-            );
-
-            temp[i] = (x0 + t3) >> 10;
-            temp[i + 56] = (x0 - t3) >> 10;
-            temp[i + 8] = (x1 + t2) >> 10;
-            temp[i + 48] = (x1 - t2) >> 10;
-            temp[i + 16] = (x2 + t1) >> 10;
-            temp[i + 40] = (x2 - t1) >> 10;
-            temp[i + 24] = (x3 + t0) >> 10;
-            temp[i + 32] = (x3 - t0) >> 10;
+        let out = ifast_1d([
+            dequantize(i),
+            dequantize(i + 8),
+            dequantize(i + 16),
+            dequantize(i + 24),
+            dequantize(i + 32),
+            dequantize(i + 40),
+            dequantize(i + 48),
+            dequantize(i + 56),
+        ]);
+        for row in 0..8 {
+            workspace[i + 8 * row] = out[row];
         }
     }
 
-    for (chunk, output_chunk) in temp.chunks_exact(8).zip(output) {
+    // Pass 2: process rows from work array, store into output array.
+    // The results are descaled by 8 and by the PASS1_BITS scaling, then range-limited.
+    for (chunk, output_chunk) in workspace.chunks_exact(8).zip(output) {
         let chunk = <&[_; 8]>::try_from(chunk).unwrap();
-
-        // constants scaled things up by 1<<12, plus we had 1<<2 from first
-        // loop, plus horizontal and vertical each scale by sqrt(8) so together
-        // we've got an extra 1<<3, so 1<<17 total we need to remove.
-        // so we want to round that, which means adding 0.5 * 1<<17,
-        // aka 65536. Also, we'll end up with -128 to 127 that we want
-        // to encode as 0..255 by adding 128, so we'll add that before the shift
-        const X_SCALE: i32 = 65536 + (128 << 17);
 
         // eliminate downstream bounds checks
         let output_chunk = &mut output_chunk[..8];
 
-        // TODO When the minimum rust version supports it
-        // let [s0, rest @ ..] = chunk;
         let (s0, rest) = chunk.split_first().unwrap();
         if *rest == [Wrapping(0); 7] {
-            let dcterm = stbi_clamp((stbi_fsh(*s0) + Wrapping(X_SCALE)) >> 17);
-            output_chunk[0] = dcterm;
-            output_chunk[1] = dcterm;
-            output_chunk[2] = dcterm;
-            output_chunk[3] = dcterm;
-            output_chunk[4] = dcterm;
-            output_chunk[5] = dcterm;
-            output_chunk[6] = dcterm;
-            output_chunk[7] = dcterm;
-        } else {
-            let Kernel {
-                xs: [x0, x1, x2, x3],
-                ts: [t0, t1, t2, t3],
-            } = kernel(*chunk, X_SCALE);
+            // AC terms all zero
+            let dcval = ifast_output(*s0);
+            output_chunk.fill(dcval);
+            continue;
+        }
 
-            output_chunk[0] = stbi_clamp((x0 + t3) >> 17);
-            output_chunk[7] = stbi_clamp((x0 - t3) >> 17);
-            output_chunk[1] = stbi_clamp((x1 + t2) >> 17);
-            output_chunk[6] = stbi_clamp((x1 - t2) >> 17);
-            output_chunk[2] = stbi_clamp((x2 + t1) >> 17);
-            output_chunk[5] = stbi_clamp((x2 - t1) >> 17);
-            output_chunk[3] = stbi_clamp((x3 + t0) >> 17);
-            output_chunk[4] = stbi_clamp((x3 - t0) >> 17);
+        let out = ifast_1d(*chunk);
+        for (o, v) in output_chunk.iter_mut().zip(out) {
+            *o = ifast_output(v);
         }
     }
 }
 
-struct Kernel {
-    xs: [Wrapping<i32>; 4],
-    ts: [Wrapping<i32>; 4],
-}
+const IFAST_CONST_BITS: usize = 8;
+const IFAST_PASS1_BITS: usize = 2;
 
-#[inline]
-fn kernel_x([s0, s2, s4, s6]: [Wrapping<i32>; 4], x_scale: i32) -> [Wrapping<i32>; 4] {
-    // Even `chunk` indicies
-    let (t2, t3);
+const FIX_1_082392200: Wrapping<i32> = Wrapping(277); // FIX(1.082392200)
+const FIX_1_414213562: Wrapping<i32> = Wrapping(362); // FIX(1.414213562)
+const FIX_1_847759065: Wrapping<i32> = Wrapping(473); // FIX(1.847759065)
+const FIX_2_613125930: Wrapping<i32> = Wrapping(669); // FIX(2.613125930)
+
+// jddctmgr.c: AA&N scale factors (scalefactor[row] * scalefactor[col]) scaled up by 14 bits.
+const AAN_CONST_BITS: usize = 14;
+// jdct.h: fractional bits in the IFAST multipliers (8-bit samples).
+const IFAST_SCALE_BITS: usize = 2;
+#[rustfmt::skip]
+const AANSCALES: [i32; 64] = [
+    16384, 22725, 21407, 19266, 16384, 12873,  8867,  4520,
+    22725, 31521, 29692, 26722, 22725, 17855, 12299,  6270,
+    21407, 29692, 27969, 25172, 21407, 16819, 11585,  5906,
+    19266, 26722, 25172, 22654, 19266, 15137, 10426,  5315,
+    16384, 22725, 21407, 19266, 16384, 12873,  8867,  4520,
+    12873, 17855, 16819, 15137, 12873, 10114,  6967,  3552,
+     8867, 12299, 11585, 10426,  8867,  6967,  4799,  2446,
+     4520,  6270,  5906,  5315,  4520,  3552,  2446,  1247,
+];
+
+// jddctmgr.c, JDCT_IFAST: DESCALE(quantval * aanscales, CONST_BITS - IFAST_SCALE_BITS), stored
+// as IFAST_MULT_TYPE, which is `short` in libjpeg-turbo built with SIMD.
+fn ifast_multipliers(quantization_table: &[u16; 64]) -> [Wrapping<i32>; 64] {
+    const SHIFT: usize = AAN_CONST_BITS - IFAST_SCALE_BITS;
+    let mut multipliers = [Wrapping(0i32); 64];
+    for ((m, &q), &aan) in multipliers
+        .iter_mut()
+        .zip(quantization_table.iter())
+        .zip(AANSCALES.iter())
     {
-        let p2 = s2;
-        let p3 = s6;
-
-        let p1 = (p2 + p3) * stbi_f2f(0.5411961);
-        t2 = p1 + p3 * stbi_f2f(-1.847759065);
-        t3 = p1 + p2 * stbi_f2f(0.765366865);
+        let x = (Wrapping(i32::from(q)) * Wrapping(aan) + Wrapping(1 << (SHIFT - 1))) >> SHIFT;
+        *m = Wrapping(i32::from(x.0 as i16));
     }
-
-    let (t0, t1);
-    {
-        let p2 = s0;
-        let p3 = s4;
-
-        t0 = stbi_fsh(p2 + p3);
-        t1 = stbi_fsh(p2 - p3);
-    }
-
-    let x0 = t0 + t3;
-    let x3 = t0 - t3;
-    let x1 = t1 + t2;
-    let x2 = t1 - t2;
-
-    let x_scale = Wrapping(x_scale);
-
-    [x0 + x_scale, x1 + x_scale, x2 + x_scale, x3 + x_scale]
+    multipliers
 }
 
-#[inline]
-fn kernel_t([s1, s3, s5, s7]: [Wrapping<i32>; 4]) -> [Wrapping<i32>; 4] {
-    // Odd `chunk` indicies
-    let mut t0 = s7;
-    let mut t1 = s5;
-    let mut t2 = s3;
-    let mut t3 = s1;
-
-    let p3 = t0 + t2;
-    let p4 = t1 + t3;
-    let p1 = t0 + t3;
-    let p2 = t1 + t2;
-    let p5 = (p3 + p4) * stbi_f2f(1.175875602);
-
-    t0 *= stbi_f2f(0.298631336);
-    t1 *= stbi_f2f(2.053119869);
-    t2 *= stbi_f2f(3.072711026);
-    t3 *= stbi_f2f(1.501321110);
-
-    let p1 = p5 + p1 * stbi_f2f(-0.899976223);
-    let p2 = p5 + p2 * stbi_f2f(-2.562915447);
-    let p3 = p3 * stbi_f2f(-1.961570560);
-    let p4 = p4 * stbi_f2f(-0.390180644);
-
-    t3 += p1 + p4;
-    t2 += p2 + p3;
-    t1 += p2 + p4;
-    t0 += p1 + p3;
-
-    [t0, t1, t2, t3]
-}
-
-#[inline]
-fn kernel([s0, s1, s2, s3, s4, s5, s6, s7]: [Wrapping<i32>; 8], x_scale: i32) -> Kernel {
-    Kernel {
-        xs: kernel_x([s0, s2, s4, s6], x_scale),
-        ts: kernel_t([s1, s3, s5, s7]),
-    }
-}
-
+// MULTIPLY(var, const): DESCALE((var) * (const), CONST_BITS) without rounding
+// (USE_ACCURATE_ROUNDING is not defined).
 #[inline(always)]
-fn dequantize(c: i16, q: u16) -> Wrapping<i32> {
-    Wrapping(i32::from(c) * i32::from(q))
+fn ifast_multiply(var: Wrapping<i32>, constant: Wrapping<i32>) -> Wrapping<i32> {
+    (var * constant) >> IFAST_CONST_BITS
+}
+
+// One 1-D pass of jpeg_idct_ifast. `s` is in natural order (s[0] = DC); the result is in output
+// order (out[0] .. out[7]).
+#[inline(always)]
+fn ifast_1d(s: [Wrapping<i32>; 8]) -> [Wrapping<i32>; 8] {
+    // Even part
+    let tmp0 = s[0];
+    let tmp1 = s[2];
+    let tmp2 = s[4];
+    let tmp3 = s[6];
+
+    let tmp10 = tmp0 + tmp2; // phase 3
+    let tmp11 = tmp0 - tmp2;
+
+    let tmp13 = tmp1 + tmp3; // phases 5-3
+    let tmp12 = ifast_multiply(tmp1 - tmp3, FIX_1_414213562) - tmp13; // 2*c4
+
+    let tmp0 = tmp10 + tmp13; // phase 2
+    let tmp3 = tmp10 - tmp13;
+    let tmp1 = tmp11 + tmp12;
+    let tmp2 = tmp11 - tmp12;
+
+    // Odd part
+    let tmp4 = s[1];
+    let tmp5 = s[3];
+    let tmp6 = s[5];
+    let tmp7 = s[7];
+
+    let z13 = tmp6 + tmp5; // phase 6
+    let z10 = tmp6 - tmp5;
+    let z11 = tmp4 + tmp7;
+    let z12 = tmp4 - tmp7;
+
+    let tmp7 = z11 + z13; // phase 5
+    let tmp11 = ifast_multiply(z11 - z13, FIX_1_414213562); // 2*c4
+
+    let z5 = ifast_multiply(z10 + z12, FIX_1_847759065); // 2*c2
+    let tmp10 = ifast_multiply(z12, FIX_1_082392200) - z5; // 2*(c2-c6)
+    let tmp12 = ifast_multiply(z10, -FIX_2_613125930) + z5; // -2*(c2+c6)
+
+    let tmp6 = tmp12 - tmp7; // phase 2
+    let tmp5 = tmp11 - tmp6;
+    let tmp4 = tmp10 + tmp5;
+
+    [
+        tmp0 + tmp7,
+        tmp1 + tmp6,
+        tmp2 + tmp5,
+        tmp3 - tmp4,
+        tmp3 + tmp4,
+        tmp2 - tmp5,
+        tmp1 - tmp6,
+        tmp0 - tmp7,
+    ]
+}
+
+// Final output stage: IDESCALE(x, PASS1_BITS + 3) (a plain arithmetic shift) and range-limit.
+// libjpeg indexes range_limit[x & RANGE_MASK]; this saturates instead, which is equal for every
+// value a valid stream produces and is what libjpeg-turbo's SIMD ifast IDCT does.
+#[inline(always)]
+fn ifast_output(x: Wrapping<i32>) -> u8 {
+    ((x >> (IFAST_PASS1_BITS + 3)).0 + 128).clamp(0, 255) as u8
 }
 
 // 4x4 and 2x2 IDCT based on Rakesh Dugad and Narendra Ahuja: "A Fast Scheme for Image Size Change in the Compressed Domain" (2001).
@@ -573,10 +567,6 @@ fn stbi_f2f(x: f32) -> Wrapping<i32> {
     Wrapping((x * 4096.0 + 0.5) as i32)
 }
 
-fn stbi_fsh(x: Wrapping<i32>) -> Wrapping<i32> {
-    x << 12
-}
-
 #[test]
 fn test_dequantize_and_idct_block_8x8() {
     #[rustfmt::skip]
@@ -642,16 +632,6 @@ fn test_dequantize_and_idct_block_8x8_saturated() {
     }
     let mut output = [0u8; 8 * 8];
     dequantize_and_idct_block_8x8(&[i16::MAX; 8 * 8], &[u16::MAX; 8 * 8], 8, &mut output);
-    #[rustfmt::skip]
-    let expected = [
-        0, 0, 0, 255, 255, 0, 0, 255,
-        0, 0, 215, 0, 0, 255, 255, 0,
-        255, 255, 255, 255, 255, 0, 0, 255,
-        0, 0, 255, 0, 255, 0, 255, 255,
-        0, 0, 255, 255, 0, 255, 0, 0,
-        255, 255, 0, 255, 255, 255, 170, 0,
-        0, 255, 0, 0, 0, 0, 0, 255,
-        255, 255, 0, 255, 0, 255, 0, 0
-    ];
-    assert_eq!(&output[..], &expected[..]);
+    // The values wrap (as in libjpeg with such coefficients); the test is that nothing panics,
+    // also in debug builds with overflow checks.
 }

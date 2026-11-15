@@ -97,6 +97,9 @@ dependencies = [
 [[package]]
 name = "ezpzxdw-jpeg"
 version = "0.3.0"
+dependencies = [
+ "png",
+]
 
 [[package]]
 name = "ezpzxdw-raster"

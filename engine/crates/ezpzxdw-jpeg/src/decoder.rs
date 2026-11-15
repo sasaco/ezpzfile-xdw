@@ -1483,26 +1483,34 @@ fn color_no_convert(data: &[Vec<u8>], output: &mut [u8]) {
     }
 }
 
-const FIXED_POINT_OFFSET: i32 = 20;
-const HALF: i32 = (1 << FIXED_POINT_OFFSET) / 2;
+// libjpeg-turbo 3.0.4's YCbCr to RGB conversion (build_ycc_rgb_table in jdcolor.c and
+// ycc_rgb_convert in jdcolext.c), computed inline instead of from the tables: SCALEBITS = 16,
+// ONE_HALF, FIX(x) = (x * 65536 + 0.5) as integer, arithmetic right shifts, then range-limit.
+const FIXED_POINT_OFFSET: i32 = 16;
+const HALF: i32 = 1 << (FIXED_POINT_OFFSET - 1);
 
 // ITU-R BT.601
-// Based on libjpeg-turbo's jdcolext.c
 fn ycbcr_to_rgb(y: u8, cb: u8, cr: u8) -> (u8, u8, u8) {
-    let y = y as i32 * (1 << FIXED_POINT_OFFSET) + HALF;
+    let y = y as i32;
     let cb = cb as i32 - 128;
     let cr = cr as i32 - 128;
 
-    let r = clamp_fixed_point(y + stbi_f2f(1.40200) * cr);
-    let g = clamp_fixed_point(y - stbi_f2f(0.34414) * cb - stbi_f2f(0.71414) * cr);
-    let b = clamp_fixed_point(y + stbi_f2f(1.77200) * cb);
+    // Cr_r_tab[cr], Cb_b_tab[cb], and Cb_g_tab[cb] + Cr_g_tab[cr] shifted down.
+    let cr_r = (stbi_f2f(1.40200) * cr + HALF) >> FIXED_POINT_OFFSET;
+    let cb_b = (stbi_f2f(1.77200) * cb + HALF) >> FIXED_POINT_OFFSET;
+    let cbcr_g = (-stbi_f2f(0.34414) * cb + HALF + -stbi_f2f(0.71414) * cr) >> FIXED_POINT_OFFSET;
+
+    let r = clamp_sample(y + cr_r);
+    let g = clamp_sample(y + cbcr_g);
+    let b = clamp_sample(y + cb_b);
     (r, g, b)
 }
 
+// FIX(x) of jdcolor.c.
 fn stbi_f2f(x: f32) -> i32 {
     (x * ((1 << FIXED_POINT_OFFSET) as f32) + 0.5) as i32
 }
 
-fn clamp_fixed_point(value: i32) -> u8 {
-    (value >> FIXED_POINT_OFFSET).min(255).max(0) as u8
+fn clamp_sample(value: i32) -> u8 {
+    value.clamp(0, 255) as u8
 }

@@ -19,3 +19,6 @@ platform_independent = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("rayon", "nightly_aarch64_neon"))', 'cfg(target_arch, values("asmjs"))'] }
+
+[dev-dependencies]
+png = "=0.18.1"
