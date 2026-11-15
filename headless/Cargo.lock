@@ -72,8 +72,8 @@ name = "ezpzxdw-core"
 version = "0.3.0"
 dependencies = [
  "encoding_rs",
+ "ezpzxdw-jpeg",
  "fax",
- "jpeg-decoder",
  "serde",
  "serde_json",
 ]
@@ -88,11 +88,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ezpzxdw-jpeg"
+version = "0.3.0"
+
+[[package]]
 name = "ezpzxdw-raster"
 version = "0.3.0"
 dependencies = [
  "ezpzxdw-core",
- "jpeg-decoder",
+ "ezpzxdw-jpeg",
  "tiny-skia",
  "ttf-parser",
 ]
@@ -128,12 +132,6 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
-
-[[package]]
-name = "jpeg-decoder"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00810f1d8b74be64b13dbf3db89ac67740615d6c891f0e7b6179326533011a07"
 
 [[package]]
 name = "log"

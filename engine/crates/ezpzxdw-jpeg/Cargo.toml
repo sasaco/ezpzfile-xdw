@@ -1,0 +1,21 @@
+[package]
+name = "ezpzxdw-jpeg"
+description = "jpeg-decoder 0.3.2 (image-rs) with libjpeg-turbo's fast integer IDCT, fancy upsampling and colour tables, so pictures decode as DocuWorks draws them"
+version.workspace = true
+edition = "2021"
+license = "(MIT OR Apache-2.0) AND IJG"
+publish = false
+
+[lib]
+name = "ezpzxdw_jpeg"
+path = "src/lib.rs"
+# The upstream doc examples read files that are not vendored.
+doctest = false
+
+[features]
+# `src/arch/` (SIMD) is not vendored, so the crate only builds with this feature.
+default = ["platform_independent"]
+platform_independent = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("rayon", "nightly_aarch64_neon"))', 'cfg(target_arch, values("asmjs"))'] }

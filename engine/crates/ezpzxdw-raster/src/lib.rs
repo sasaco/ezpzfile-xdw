@@ -326,7 +326,7 @@ impl<'a> Picture<'a> {
 
 /// A JPEG of `w` × `h` as opaque RGBA.
 fn jpeg_rgba(bytes: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
-    let mut dec = jpeg_decoder::Decoder::new(bytes);
+    let mut dec = ezpzxdw_jpeg::Decoder::new(bytes);
     let px = dec.decode().ok()?;
     let info = dec.info()?;
     if (info.width as u32, info.height as u32) != (w, h) {
@@ -334,10 +334,10 @@ fn jpeg_rgba(bytes: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
     }
     let mut out = Vec::with_capacity(w as usize * h as usize * 4);
     match info.pixel_format {
-        jpeg_decoder::PixelFormat::L8 => px.iter().for_each(|&g| out.extend_from_slice(&[g, g, g, 255])),
-        jpeg_decoder::PixelFormat::L16 => px.chunks_exact(2).for_each(|g| out.extend_from_slice(&[g[0], g[0], g[0], 255])),
-        jpeg_decoder::PixelFormat::RGB24 => px.chunks_exact(3).for_each(|p| out.extend_from_slice(&[p[0], p[1], p[2], 255])),
-        jpeg_decoder::PixelFormat::CMYK32 => px.chunks_exact(4).for_each(|p| {
+        ezpzxdw_jpeg::PixelFormat::L8 => px.iter().for_each(|&g| out.extend_from_slice(&[g, g, g, 255])),
+        ezpzxdw_jpeg::PixelFormat::L16 => px.chunks_exact(2).for_each(|g| out.extend_from_slice(&[g[0], g[0], g[0], 255])),
+        ezpzxdw_jpeg::PixelFormat::RGB24 => px.chunks_exact(3).for_each(|p| out.extend_from_slice(&[p[0], p[1], p[2], 255])),
+        ezpzxdw_jpeg::PixelFormat::CMYK32 => px.chunks_exact(4).for_each(|p| {
             // Adobe JPEGs store CMYK inverted
             let k = p[3] as u16;
             let ch = |c: u8| ((c as u16 * k) / 255) as u8;
