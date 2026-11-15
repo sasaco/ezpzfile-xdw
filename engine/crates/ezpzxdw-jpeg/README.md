@@ -12,6 +12,9 @@ uses a different IDCT, upsampler and conversion, and has no way to swap its IDCT
 it decodes differ slightly from what DocuWorks shows. This crate keeps jpeg-decoder's parser and
 Huffman decoding and is where those three parts are replaced.
 
+It is used by ezpzxdw-core (`ezpzxdw_core::jpeg::rgba`, and the kind 11 backgrounds in `ims.rs`),
+and through it by the raster (headless `xdw_png`) and the wasm screen.
+
 ## Changes from jpeg-decoder 0.3.2
 
 Files under `src/` not listed here are byte-identical to upstream, so they can be diffed against it.
