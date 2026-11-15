@@ -567,7 +567,7 @@ impl<'a> R<'a> {
         // bottom-up pictures)
         let (sx, sy, sw, sh) = (src[0].max(0) as u32, src[1].max(0) as u32, src[2].unsigned_abs() as u32, src[3].unsigned_abs() as u32);
         if sw > 0 && sh > 0 && (sw != img.w || sh != img.h || sx != 0 || sy != 0) {
-            let y_top = if bottom_up { img.h.saturating_sub(sy + sh) } else { sy };
+            let y_top = if bottom_up { img.h.saturating_sub(sy.saturating_add(sh)) } else { sy };
             if let Some(c) = dib::crop(&img, sx, y_top, sw, sh) {
                 img = c;
             }

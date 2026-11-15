@@ -79,8 +79,14 @@ pub fn decode(d: &[u8], px: Option<(u32, u32)>) -> Option<Image> {
     let n = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
     let mut out = Canvas { w: w as u64, h: h as u64, px: vec![255u8; n] };
 
+    // A crafted body can repeat cheap records or claim huge masks: count the
+    // records, and the pixels painted (at most 16 page-sized layers).
+    let mut budget: u64 = (w as u64 * h as u64).saturating_mul(16);
     let mut i = HEADER;
     loop {
+        if !limits::record() {
+            return None;
+        }
         if u32_at(d, i)? == END {
             break;
         }
@@ -97,7 +103,7 @@ pub fn decode(d: &[u8], px: Option<(u32, u32)>) -> Option<Image> {
             return None;
         }
         match (kind, coding) {
-            (1, 0x20) if colour == 0x27 || colour == 0x12 => background(&mut out, data, [x, y, rw, rh], (sw, sh))?,
+            (1, 0x20) if colour == 0x27 || colour == 0x12 => background(&mut out, data, [x, y, rw, rh], (sw, sh), &mut budget)?,
             (3, 0x11) => {
                 let rgb = match colour {
                     0x12 => [v0, v0, v0],
@@ -107,7 +113,7 @@ pub fn decode(d: &[u8], px: Option<(u32, u32)>) -> Option<Image> {
                 if rgb.iter().any(|&v| v > 255) || (sw, sh) != (rw, rh) {
                     return None;
                 }
-                mask(&mut out, data, [x, y, rw, rh], rgb.map(|v| v as u8))?;
+                mask(&mut out, data, [x, y, rw, rh], rgb.map(|v| v as u8), &mut budget)?;
             }
             _ => return None,
         }
@@ -115,8 +121,19 @@ pub fn decode(d: &[u8], px: Option<(u32, u32)>) -> Option<Image> {
     Some(Image { w, h, data: ImageData::Rgba(out.px) })
 }
 
+/// Takes `n` pixels from what is left of `budget`; false when it does not cover them.
+fn spend(budget: &mut u64, n: u64) -> bool {
+    match budget.checked_sub(n) {
+        Some(left) => {
+            *budget = left;
+            true
+        }
+        None => false,
+    }
+}
+
 /// A JPEG of `sw` × `sh` stretched over `r` (x, y, w, h) with nearest sampling.
-fn background(out: &mut Canvas, jpeg: &[u8], r: [u32; 4], (sw, sh): (u32, u32)) -> Option<()> {
+fn background(out: &mut Canvas, jpeg: &[u8], r: [u32; 4], (sw, sh): (u32, u32), budget: &mut u64) -> Option<()> {
     if !limits::image(sw as usize, sh as usize) || crate::pages::jpeg_size(jpeg)? != (sw, sh) {
         return None;
     }
@@ -139,6 +156,9 @@ fn background(out: &mut Canvas, jpeg: &[u8], r: [u32; 4], (sw, sh): (u32, u32)) 
     // only the part of the rectangle that lands on the page
     let cols = rw.min(out.w.saturating_sub(x));
     let rows = rh.min(out.h.saturating_sub(y));
+    if !spend(budget, cols * rows) {
+        return None;
+    }
     for dy in 0..rows {
         let sy = dy * sh / rh;
         for dx in 0..cols {
@@ -153,15 +173,23 @@ fn background(out: &mut Canvas, jpeg: &[u8], r: [u32; 4], (sw, sh): (u32, u32)) 
 }
 
 /// A Group 4 mask of `r`'s w × h at (x, y); its black pixels painted `rgb`.
-fn mask(out: &mut Canvas, data: &[u8], r: [u32; 4], rgb: [u8; 3]) -> Option<()> {
+fn mask(out: &mut Canvas, data: &[u8], r: [u32; 4], rgb: [u8; 3], budget: &mut u64) -> Option<()> {
     let [x, y, rw, rh] = r;
     if !limits::image_size(rw as usize, rh as usize) {
         return None;
     }
     let (x, y, wu) = (x as u64, y as u64, rw as u64);
+    // only the rows that land on the page are decoded and paid for
+    let visible = (rh as u64).min(out.h.saturating_sub(y));
+    if !spend(budget, wu * visible) {
+        return None;
+    }
+    if visible == 0 {
+        return Some(());
+    }
     let mut row = 0u64;
-    fax::decoder::decode_g4(data.iter().copied(), rw, Some(rh), |transitions: &[u32]| {
-        if row >= rh as u64 {
+    fax::decoder::decode_g4(data.iter().copied(), rw, Some(visible as u32), |transitions: &[u32]| {
+        if row >= visible {
             return;
         }
         let py = y + row;
@@ -282,5 +310,39 @@ mod tests {
         huge.extend(END.to_le_bytes());
         huge.extend(0u32.to_le_bytes());
         assert!(decode(&huge, None).is_none());
+    }
+
+    #[test]
+    fn paints_at_most_sixteen_page_sized_layers() {
+        // 4 × 4, four white rows
+        let mut enc = fax::encoder::Encoder::new(fax::VecWriter::new());
+        let white = [fax::Color::White; 4];
+        for _ in 0..4 {
+            enc.encode_line(white.iter().copied(), 4).unwrap();
+        }
+        let g4 = enc.finish().unwrap().finish();
+        let page = |n: usize| {
+            let mut b = header(4, 4);
+            for _ in 0..n {
+                b.extend(record([3, 0, 0, 4, 4, 4, 4, 0, 0x11, 0x12, 255, 255, 255, 0, 0, 0], &g4));
+            }
+            b.extend(END.to_le_bytes());
+            b.extend(0u32.to_le_bytes());
+            b
+        };
+        assert!(decode(&page(16), Some((4, 4))).is_some());
+        assert!(decode(&page(17), Some((4, 4))).is_none());
+    }
+
+    #[test]
+    fn a_tall_mask_decodes_only_the_rows_on_the_page() {
+        // claims 100 000 000 rows; only an end-of-data mark follows
+        let eofb = fax::encoder::Encoder::new(fax::VecWriter::new()).finish().unwrap().finish();
+        let mut b = header(4, 4);
+        b.extend(record([3, 0, 0, 1, 100_000_000, 1, 100_000_000, 0, 0x11, 0x12, 255, 255, 255, 0, 0, 0], &eofb));
+        b.extend(END.to_le_bytes());
+        b.extend(0u32.to_le_bytes());
+        // returns at all (Some or None) rather than decoding 10^8 rows
+        let _ = decode(&b, Some((4, 4)));
     }
 }
