@@ -1,0 +1,31 @@
+# The engine's tests on every push to main and every pull request: `cargo test` in engine/ (with the
+# DocuWorks 9 samples in engine/crates/ezpzxdw-core/tests/fixtures/dw9) and a build of headless/. The local
+# corpus tests are skipped here (EZPZXDW_CORPUS is not set).
+name: engine-test
+
+on:
+  push:
+    branches: [main]
+    paths: ['engine/**', 'headless/**', '.github/workflows/engine-test.yml']
+  pull_request:
+    paths: ['engine/**', 'headless/**', '.github/workflows/engine-test.yml']
+
+permissions:
+  contents: read
+
+env:
+  RUST_VERSION: '1.95.0'
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Rust
+        run: |
+          rustup toolchain install "${RUST_VERSION}" --profile minimal
+          rustup default "${RUST_VERSION}"
+      - name: Engine tests
+        run: cargo test --locked --manifest-path engine/Cargo.toml
+      - name: Headless build
+        run: cargo build --locked --manifest-path headless/Cargo.toml

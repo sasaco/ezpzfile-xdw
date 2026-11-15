@@ -95,11 +95,13 @@ When the body starts with `0x80` it is a list of fields:
 
 | field | meaning |
 |---|---|
-| 0x80 | kind: **4** EMF drawing, **1** WMF drawing, **7** thumbnail (DIB) |
+| 0x80 | kind: **4** EMF drawing, **1** WMF drawing, **7** stored DIB (thumbnails, picture annotations, bitmap pages; 5.3), **5** JPEG page, **9** Group 4 page (5.4), **10** compressed picture annotation (not read yet), **11** high-compression image page (5.4) |
 | 0x81 | size of the data once expanded (kind 7: something else) |
 | 0x83 | 8 in WMF entries |
 | 0x84, 0x85 | width, height (1/100 mm) |
-| 0x8d | 3 for page drawings, 1 for annotation drawings |
+| 0x87, 0x88 | width, height in pixels (kinds 5, 9, 10, 11) |
+| 0x8b, 0x8c | pixels per metre (kinds 5, 11) |
+| 0x8d | 3 for page drawings, 1 for annotation drawings; on kind 11 the compression chosen (7 normal, 6 high quality, 8 high compression) |
 | 0x90, 0x91 | width, height in drawing pixels |
 | 0x8a | 1 = data is LZH-compressed |
 | 0x89 | stored size of the data |
@@ -334,14 +336,25 @@ the page [viewer].
 
 ### 5.3 Pictures stored as DIBs (kind 7)
 
-Thumbnails (attribute 58, about 104 px wide, 8-bit with a 216-colour palette)
-and picture annotations use kind 7 bodies: 0x81 = the BITMAPINFO's length
-(where the bits start), 0x84 / 0x85 = the picture's size in 1/100 mm, 0x86 =
+Thumbnails (attribute 58, about 104 px wide, 8-bit with a 216-colour
+palette), picture annotations and bitmap pages use kind 7 bodies: 0x81 = the
+BITMAPINFO's length (where the bits start), 0x84 / 0x85 = the picture's size
+in 1/100 mm, 0x86 =
 
 ```
-BITMAPINFO, then  u32 1, u32 stored size, u32 size, u32 rows,
+BITMAPINFO, then  u32 n (strips), and n times:
+                  u32 stored size, u32 size, u32 rows,
                   bits compressed with LHA -lh5-
 ```
+
+Small pictures have one strip; scanned pages and larger pictures several.
+**The strips hold the rows top-first although the BITMAPINFO height is
+positive**, in one strip as in several [DocuWorks 9 API: its pastes from the
+clipboard, pictures it adds from a BMP file (`XDW_AddAnnotation`) and its page
+thumbnails are stored so, and its render draws them upright; a one-strip
+picture stored bottom-up shows upside down; pastes in documents saved by
+DocuWorks 10 are top-first as well, and scanned pages in strips agree with the
+same book's G4 pages]. The editor writes one strip, top-first.
 
 [viewer: a picture annotation whose bits are stored plainly shows black].
 
@@ -351,6 +364,35 @@ Kind 5 (DocuWorks 10 scans, photos): the body's data is a JPEG; 0x87 / 0x88
 are its size in pixels, 0x8b / 0x8c pixels per metre; the content record
 names `cmp` = 5, `dpt` (8 grey, 24 colour), `dpi`.
 
+Kind 9 (scans in black and white): the data is CCITT Group 4 (T.6) with no
+header, 0x87 × 0x88 pixels.
+
+Kind 11 (DocuWorks 9: an image file dropped on Viewer, or
+`XDW_CreateXdwFromImageFile` with the high compressions 8, 9 and 10; 8 gives
+the same bytes as the drop): mixed raster content in an `.ims` body. The
+content record names `cmp` = 7, `dpt`, `dpi`, `org` = 22. A background JPEG
+(usually at half the size, DocuWorks stretches it pixel for pixel, nearest)
+and masks that paint one colour each:
+
+```
+header (0x1c bytes, u32 little-endian after the tag)
+  ".ims"  0x0001_0000  width  height  dpi x  dpi y  1
+records, until u32 0xdeadfeed (then one more u32)
+  17 u32: kind, x, y, w, h, stored w, stored h, 0, coding, colour,
+          255, 255|128, 255|128, v0, v1, v2, length
+  `length` bytes of data, then zero padding to a multiple of 4
+kind 1, coding 0x20   background JPEG of stored w × stored h over (x, y, w, h);
+                      colour 0x27 YCbCr, 0x12 grey; pixel (x+dx, y+dy) takes
+                      JPEG pixel (dx·stored w / w, dy·stored h / h)
+kind 3, coding 0x11   Group 4 mask of w × h at (x, y): its black pixels are
+                      painted (v0, v0, v0) for colour 0x12, (v0, v1, v2) for 0x21
+```
+
+Records are painted in order over white. [DocuWorks 9 API render of 16 such
+pages (line drawings, letters in one and two colours, grey and colour
+backgrounds, 96, 200 and 300 dpi, up to 1200 × 900): the same pixels, but up
+to 5 in colour JPEG backgrounds, where decoders turn YCbCr into RGB a little
+differently]
 
 Scanned and image pages are page EMFs at 600 dpi without a window, that draw
 JPEG pictures with `DWb` + `DWc` (the scanner writes strips of 24 rows). Each

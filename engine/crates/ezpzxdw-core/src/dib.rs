@@ -5,10 +5,10 @@
 use crate::gfx::{Image, ImageData};
 
 fn u16le(b: &[u8], i: usize) -> u32 {
-    b.get(i..i + 2).map(|x| u16::from_le_bytes([x[0], x[1]]) as u32).unwrap_or(0)
+    i.checked_add(2).and_then(|e| b.get(i..e)).map(|x| u16::from_le_bytes([x[0], x[1]]) as u32).unwrap_or(0)
 }
 fn u32le(b: &[u8], i: usize) -> u32 {
-    b.get(i..i + 4).map(|x| u32::from_le_bytes([x[0], x[1], x[2], x[3]])).unwrap_or(0)
+    i.checked_add(4).and_then(|e| b.get(i..e)).map(|x| u32::from_le_bytes([x[0], x[1], x[2], x[3]])).unwrap_or(0)
 }
 
 /// What a BITMAPINFO says.
@@ -34,8 +34,10 @@ pub fn info(bmi: &[u8]) -> Option<Info> {
         let palette = (0..n)
             .map(|k| {
                 let p = 12 + 3 * k;
-                bmi.get(p..p + 3).map(|c| (c[2] as u32) << 16 | (c[1] as u32) << 8 | c[0] as u32).unwrap_or(0)
+                let c = bmi.get(p..p.checked_add(3)?)?;
+                Some((c[2] as u32) << 16 | (c[1] as u32) << 8 | c[0] as u32)
             })
+            .map(|c| c.unwrap_or(0))
             .collect();
         return Some(Info { w, h, top_down: false, bpp, compression: 0, palette, masks: None });
     }
@@ -53,16 +55,22 @@ pub fn info(bmi: &[u8]) -> Option<Info> {
         if size >= 52 {
             masks = Some([u32le(bmi, 40), u32le(bmi, 44), u32le(bmi, 48)]);
         } else {
-            masks = Some([u32le(bmi, at), u32le(bmi, at + 4), u32le(bmi, at + 8)]);
-            at += 12;
+            // offsets past usize (biSize near u32::MAX on wasm32) read as 0,
+            // as they would past the end of the buffer
+            let m = |k: usize| at.checked_add(k).map_or(0, |p| u32le(bmi, p));
+            masks = Some([m(0), m(4), m(8)]);
+            at = at.saturating_add(12);
         }
     }
     let n = if bpp <= 8 { if used > 0 { used.min(256) } else { 1usize << bpp } } else { used.min(256) };
     let palette = (0..n)
         .map(|k| {
-            let p = at + 4 * k;
-            bmi.get(p..p + 3).map(|c| (c[2] as u32) << 16 | (c[1] as u32) << 8 | c[0] as u32).unwrap_or(0)
+            // k < 256: 4 * k cannot overflow, at + 4 * k can
+            let p = at.checked_add(4 * k)?;
+            let c = bmi.get(p..p.checked_add(3)?)?;
+            Some((c[2] as u32) << 16 | (c[1] as u32) << 8 | c[0] as u32)
         })
+        .map(|c| c.unwrap_or(0))
         .collect();
     if w <= 0 || h == 0 {
         return None;
@@ -213,7 +221,9 @@ fn rle(inf: &Info, b: &[u8], mut set: impl FnMut(usize, usize, usize)) {
 pub fn info_len(d: &[u8]) -> Option<usize> {
     let inf = info(d)?;
     let size = u32le(d, 0) as usize;
-    Some(size + inf.palette.len() * 4 + if inf.masks.is_some() && size == 40 { 12 } else { 0 })
+    // biSize comes from the file: a sum past usize is no header
+    let masks = if inf.masks.is_some() && size == 40 { 12 } else { 0 };
+    size.checked_add(inf.palette.len().checked_mul(4)?)?.checked_add(masks)
 }
 
 /// A DIB as DocuWorks stores it in pictures, thumbnails and bitmap pages
@@ -222,19 +232,24 @@ pub fn info_len(d: &[u8]) -> Option<usize> {
 /// compressed with LHA -lh5-. Small pictures have one strip; scanned pages
 /// are cut into strips of a few hundred rows.
 ///
+/// The strip form keeps rows top-first although the height is positive, in
+/// one strip or several (DocuWorks 9 API render of its own pastes,
+/// API-added pictures and thumbnails, and of pastes in DocuWorks 10-saved
+/// documents; scanned pages checked against the same book's G4 pages).
+///
 /// Returns the picture and whether its rows were stored bottom-up (what a
 /// caller cropping in DIB terms needs).
 pub fn decode_stored(d: &[u8]) -> Option<(Image, bool)> {
     let at = info_len(d)?;
-    let bmi = &d[..at];
+    // the header's own size field can point past the data
+    let bmi = d.get(..at)?;
     let rest = d.get(at..)?;
-    let Some((bits, strips)) = stored_strips(rest) else {
+    let Some(bits) = stored_strips(rest) else {
         return Some((decode(bmi, rest)?, !info(bmi)?.top_down));
     };
-    if strips > 1 {
-        // Scanned pages in strips keep their rows top-first although the
-        // height is positive (checked against the same book's G4 pages):
-        // read them as a top-down DIB.
+    if u32le(bmi, 0) >= 40 {
+        // Strips keep their rows top-first although the height is positive,
+        // in one strip or several: read them as a top-down DIB.
         let mut bmi = bmi.to_vec();
         let h = i32::from_le_bytes([bmi[8], bmi[9], bmi[10], bmi[11]]);
         if h > 0 {
@@ -245,10 +260,10 @@ pub fn decode_stored(d: &[u8]) -> Option<(Image, bool)> {
     Some((decode(bmi, &bits)?, !info(bmi)?.top_down))
 }
 
-/// The bits of a stored DIB's strips, expanded and joined, and the number of
-/// strips; None when `rest` is not in that form (then it is the bits themselves).
+/// The bits of a stored DIB's strips, expanded and joined; None when `rest`
+/// is not in that form (then it is the bits themselves).
 /// Each strip's expansion is checked and counted by [`crate::lzh::decompress`].
-fn stored_strips(rest: &[u8]) -> Option<(Vec<u8>, usize)> {
+fn stored_strips(rest: &[u8]) -> Option<Vec<u8>> {
     if rest.len() < 16 {
         return None;
     }
@@ -269,14 +284,36 @@ fn stored_strips(rest: &[u8]) -> Option<(Vec<u8>, usize)> {
         bits.extend(crate::lzh::decompress(data, size).ok()?);
         at += 12 + stored;
     }
-    Some((bits, n))
+    Some(bits)
 }
 
-/// The DocuWorks form of a DIB: `bmi` + compressed bits block.
+/// The DocuWorks form of a DIB: `bmi` + compressed bits block, in one strip,
+/// rows top-first as DocuWorks writes and reads them. `bits` are in the order
+/// the header says (bottom-up for a positive height); the header is written
+/// unchanged.
+///
+/// Callers pass uncompressed bits (BI_RGB or BI_BITFIELDS) of exactly `rows`
+/// rows, as [`crate::edit::dib_24`] makes them; only such bits are turned
+/// top-first. Anything else is stored as given.
 pub fn encode_stored(bmi: &[u8], bits: &[u8], rows: u32) -> Vec<u8> {
-    let packed = crate::lzh::compress(bits);
+    let h = bmi.get(8..12).map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]])).unwrap_or(0);
+    let bottom_up = u32le(bmi, 0) >= 40 && h > 0;
+    let uncompressed = matches!(u32le(bmi, 16), 0 | 3);
+    let flip = bottom_up && uncompressed && rows > 0 && bits.len() % rows as usize == 0;
+    debug_assert!(
+        !bottom_up || flip,
+        "encode_stored got a bottom-up header with bits it cannot turn top-first \
+         (compressed, or not a whole number of rows)"
+    );
+    let stored: Vec<u8> = if flip {
+        let stride = bits.len() / rows as usize;
+        if stride == 0 { bits.to_vec() } else { bits.chunks(stride).rev().flatten().copied().collect() }
+    } else {
+        bits.to_vec()
+    };
+    let packed = crate::lzh::compress(&stored);
     let mut out = bmi.to_vec();
-    for v in [1u32, packed.len() as u32, bits.len() as u32, rows] {
+    for v in [1u32, packed.len() as u32, stored.len() as u32, rows] {
         out.extend_from_slice(&v.to_le_bytes());
     }
     out.extend_from_slice(&packed);
@@ -337,9 +374,62 @@ mod tests {
         let mut top_down = bmi.clone();
         top_down[8..12].copy_from_slice(&(-2i32).to_le_bytes());
         assert_eq!(decode_stored(&d).unwrap(), (decode(&top_down, &joined).unwrap(), false));
-        // the one-strip form still reads, bottom-up as its header says
+        // the one-strip form round-trips: written top-first, read top-first
         let one = encode_stored(&bmi, &joined, 2);
-        assert_eq!(decode_stored(&one).unwrap(), (decode(&bmi, &joined).unwrap(), true));
+        assert_eq!(decode_stored(&one).unwrap(), (decode(&bmi, &joined).unwrap(), false));
+    }
+
+    #[test]
+    fn one_strip_rows_are_top_first() {
+        // 2x2, 1 bpp, palette black/white, positive height; one strip as
+        // DocuWorks writes it, first stored row = top (a set bit is colour 1,
+        // white)
+        let mut bmi = vec![0u8; 40 + 8];
+        bmi[0] = 40;
+        bmi[4] = 2;
+        bmi[8] = 2;
+        bmi[12] = 1;
+        bmi[14] = 1;
+        bmi[44] = 255;
+        bmi[45] = 255;
+        bmi[46] = 255;
+        let rows = [0b0100_0000u8, 0, 0, 0, 0b1000_0000, 0, 0, 0];
+        let packed = crate::lzh::compress(&rows);
+        let mut d = bmi.clone();
+        for v in [1u32, packed.len() as u32, 8, 2] {
+            d.extend(v.to_le_bytes());
+        }
+        d.extend(packed);
+        let (img, bottom_up) = decode_stored(&d).unwrap();
+        assert!(!bottom_up);
+        let ImageData::Rgba(p) = img.data else { panic!() };
+        // top row = first stored row: black, white
+        assert_eq!(&p[0..3], &[0, 0, 0]);
+        assert_eq!(&p[4..7], &[255, 255, 255]);
+        // bottom row = second stored row: white, black
+        assert_eq!(&p[8..11], &[255, 255, 255]);
+        assert_eq!(&p[12..15], &[0, 0, 0]);
+    }
+
+    #[test]
+    fn crafted_header_sizes_do_not_panic() {
+        // a core header (12) whose bit count is 0, in 16 bytes
+        let mut a = vec![0u8; 16];
+        a[0] = 12;
+        assert!(decode_stored(&a).is_none());
+        // 1 × 1 below, so the header itself is read and its size used
+        // a size field past the end of the data
+        let mut b = vec![0u8; 100];
+        b[0..4].copy_from_slice(&1000u32.to_le_bytes());
+        b[4] = 1;
+        b[8] = 1;
+        assert!(decode_stored(&b).is_none());
+        // a size field near u32::MAX
+        let mut c = vec![0u8; 48];
+        c[0..4].copy_from_slice(&0xFFFF_FFF0u32.to_le_bytes());
+        c[4] = 1;
+        c[8] = 1;
+        assert!(decode_stored(&c).is_none());
     }
 
     #[test]

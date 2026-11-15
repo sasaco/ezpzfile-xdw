@@ -1,8 +1,9 @@
-/* A small test tool around DocuWorks' own API (xdwapi.dll), run under Wine.
+/* A small test tool around DocuWorks' own API (xdwapi.dll), run on Windows or under Wine.
  *   dwapi info   FILE            document, pages, annotations and their settings
  *   dwapi make   FILE            add a date stamp, a sticky note (with text) and a text box to page 1, save
  *   dwapi render FILE PAGE OUT   page as an image file (DocuWorks draws it)
  *   dwapi addimg FILE IMAGE X Y  add a picture annotation from an image file to page 1, save
+ *   dwapi fromimg IMAGE OUT COMPRESS [FIT ZOOM]   DocuWorks makes a document from an image file (XDW_CreateXdwFromImageFile)
  *   dwapi move FILE PAGE N X Y [W H]   move (and size) annotation N, save
  *   dwapi protect IN OUT TYPE OPENPW [FULLPW PERM]   password-protect a copy (TYPE: 1, 3 = 128-bit, 7 = 256-bit)
  *   dwapi protinfo FILE           protection type and permissions
@@ -105,6 +106,19 @@ int main(int argc, char **argv) {
         int rr = pi(argv[2], &info, NULL);
         printf("protinfo %d type %d permission %#x\n", rr, info.nProtectType, info.nPermission);
         return 0;
+    }
+    if (strcmp(argv[1], "fromimg") == 0 && argc >= 5) {
+        /* fromimg IMAGE OUT COMPRESS [FIT ZOOM]: DocuWorks makes a document from an image file */
+        typedef struct { int nSize, nFitImage, nCompress, nZoom, nWidth, nHeight, nHorPos, nVerPos; } CREATE_OPTION;
+        typedef int (__stdcall *pCreate)(const char *, const char *, CREATE_OPTION *);
+        pCreate create = fn("XDW_CreateXdwFromImageFile");
+        CREATE_OPTION co; memset(&co, 0, sizeof co); co.nSize = sizeof co;
+        co.nCompress = atoi(argv[4]);
+        co.nFitImage = argc > 5 ? atoi(argv[5]) : 0;
+        co.nZoom = argc > 6 ? atoi(argv[6]) : 100;
+        int rr = create(argv[2], argv[3], &co);
+        printf("fromimg %d (%08x)\n", rr, rr);
+        return rr < 0 ? 4 : 0;
     }
     pOpen open = fn("XDW_OpenDocumentHandle");
     pClose close = fn("XDW_CloseDocumentHandle");

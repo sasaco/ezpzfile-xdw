@@ -164,12 +164,26 @@ pub fn render(d: &Display, dpi: f32, fonts: &Fonts) -> Result<Raster, String> {
                 // pixels → unit square → page (through m) → device
                 let unit = Transform::from_scale(1.0 / pic.width() as f32, 1.0 / pic.height() as f32);
                 let place = Transform::from_row(m[0], m[1], m[2], m[3], m[4], m[5]);
+                let mut t = page.pre_concat(place).pre_concat(unit);
+                let mut quality = tiny_skia::FilterQuality::Bilinear;
+                // DocuWorks draws a picture at its own size pixel for pixel at the rounded
+                // position; sampling it at a fractional one would blur it over two pixels.
+                if t.kx == 0.0
+                    && t.ky == 0.0
+                    && t.sx > 0.0
+                    && t.sy > 0.0
+                    && (t.sx - 1.0).abs() * (pic.width() as f32) < 1.0
+                    && (t.sy - 1.0).abs() * (pic.height() as f32) < 1.0
+                {
+                    t = Transform::from_translate(t.tx.round(), t.ty.round());
+                    quality = tiny_skia::FilterQuality::Nearest;
+                }
                 let paint = PixmapPaint {
                     opacity: alpha.clamp(0.0, 1.0),
                     blend_mode: if *mul { BlendMode::Multiply } else { BlendMode::SourceOver },
-                    quality: tiny_skia::FilterQuality::Bilinear,
+                    quality,
                 };
-                pixmap.draw_pixmap(0, 0, pic, &paint, page.pre_concat(place).pre_concat(unit), mask);
+                pixmap.draw_pixmap(0, 0, pic, &paint, t, mask);
             }
         }
     }
@@ -376,6 +390,34 @@ mod tests {
         assert_eq!(px(&r, 55, 50)[0], 0); // first picture pixel: black
         assert_eq!(px(&r, 95, 50)[0], 255); // second: white
         assert_eq!((r.text_runs, r.skipped_text), (1, 1));
+    }
+
+    fn black_white(x: f32, w: f32) -> Display {
+        let mut d = page();
+        d.images.push(Image { w: 2, h: 1, data: ImageData::Rgba(vec![0, 0, 0, 255, 255, 255, 255, 255]) });
+        d.items.push(Item::Image { image: 0, m: [w, 0.0, 0.0, 25.4, x, 254.0], clip: 0, alpha: 1.0, mul: false });
+        d
+    }
+
+    #[test]
+    fn a_picture_at_its_own_size_lands_on_whole_pixels() {
+        // at 100 dpi one pixel is 25.4 units; 0.4 px rounds down
+        let r = render(&black_white(10.16, 50.8), 100.0, &no_fonts()).unwrap();
+        assert_eq!(px(&r, 0, 10), [0, 0, 0, 255]);
+        assert_eq!(px(&r, 1, 10), [255, 255, 255, 255]);
+        assert_eq!(px(&r, 2, 10), [255, 255, 255, 255]);
+        // 0.6 px rounds up
+        let r = render(&black_white(15.24, 50.8), 100.0, &no_fonts()).unwrap();
+        assert_eq!(px(&r, 0, 10), [255, 255, 255, 255]);
+        assert_eq!(px(&r, 1, 10), [0, 0, 0, 255]);
+        assert_eq!(px(&r, 2, 10), [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn a_scaled_picture_is_still_smoothed() {
+        // twice its size: 4 px wide
+        let r = render(&black_white(0.0, 101.6), 100.0, &no_fonts()).unwrap();
+        assert!((0..4).any(|c| (1..255).contains(&px(&r, c, 10)[0])), "{:?}", (0..4).map(|c| px(&r, c, 10)).collect::<Vec<_>>());
     }
 
     #[test]
